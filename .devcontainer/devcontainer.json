@@ -1,0 +1,19 @@
+{
+    "image": "mcr.microsoft.com/devcontainers/typescript-node",
+    "customizations": {
+      "vscode": {
+        "extensions": [
+            "dbaeumer.vscode-eslint",
+            "esbenp.prettier-vscode",
+            "ms-azuretools.vscode-docker",
+            "editorconfig.editorconfig",
+            "devantler.gitlab-extension-pack"
+        ]
+      }
+    },
+    "forwardPorts": [3000, 3001],
+    "appPort": [3000, 3001],
+    "workspaceFolder": "/workspace",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    "postCreateCommand": "git config --global safe.directory /workspace && yarn install"
+  }

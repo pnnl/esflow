@@ -1,0 +1,50 @@
+# Set default behavior to automatically normalize line endings.
+* text=auto eol=lf
+
+# Force batch scripts to always use CRLF line endings so that if a repo is accessed
+# in Windows via a file share from Linux, the scripts will work.
+*.{cmd,[cC][mM][dD]} text eol=crlf
+*.{bat,[bB][aA][tT]} text eol=crlf
+*.{ics,[iI][cC][sS]} text eol=crlf
+
+# Force bash scripts to always use LF line endings so that if a repo is accessed
+# in Unix via a file share from Windows, the scripts will work.
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.diff  text eol=lf
+*.patch text eol=lf
+*.conf  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.cmake text eol=lf
+*.json  text eol=lf
+# Add Typescript file types
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.svg   text eol=lf
+# Add HTML/CSS file types
+*.html  text eol=lf
+*.css   text eol=lf
+*.scss  text eol=lf
+*.sass  text eol=lf
+*.less  text eol=lf
+# Add Yarn Lock file type
+yarn.lock text eol=lf
+# Add Dockerfile
+Dockerfile text eol=lf
+# Add GitLab CI file type
+.gitlab-ci.yml text eol=lf
+
+# The following are binary files
+*.gif binary
+*.ico binary
+*.jpeg binary
+*.png binary
+*.psd binary
+*.gz binary
+*.jar binary
+*.webp binary
+

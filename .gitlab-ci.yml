@@ -1,0 +1,32 @@
+include:
+  - remote: "https://tanuki.pnnl.gov/shared/backstage-service-templates/golden-paths/common/baseline-gitlab-ci/raw/main/common.yml"
+  # Uncomment the following line if you are using code.pnnl.gov, our GitLab Ultimate instance. If you using a basic or premium instance, you can remove this line.
+  #- remote: "https://tanuki.pnnl.gov/shared/backstage-service-templates/golden-paths/common/ultimate-gitlab-ci/-/raw/main/ultimate.yml"
+
+image: node:lts
+
+variables:
+  SCOPE: MY-SCOPE
+
+build:
+  stage: build
+  artifacts:
+    paths:
+      - dist
+  cache:
+    key: $CI_COMMIT_REF_NAME
+    policy: push
+    paths:
+      - node_modules
+  script:
+    - yarn
+
+publish:
+  stage: deploy
+  script:
+    - echo "@${SCOPE}:registry=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/npm/" > ~/.npmrc
+    - echo "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}" >> ~/.npmrc
+    - npm version --no-git-tag-version $CI_COMMIT_TAG --allow-same-version
+    - npm publish
+  only:
+    - tags

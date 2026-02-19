@@ -1,0 +1,20 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: esflow
+  title: esflow
+  description: Create a blank repository that has common build files and documentation for any project
+  annotations:
+    # Conditional host-specific annotations rendered to avoid empty-string values that fail catalog validation.
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: pnnl-int/esflow
+
+  tags:
+    - goldenpath
+    - sample
+    - repository
+spec:
+  type: repository
+  owner: user:default/tian.zhou_pnnl.gov
+  lifecycle: development
+  visibility: private
