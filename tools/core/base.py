@@ -1,5 +1,5 @@
 """
-ESFlow v3 tool framework.
+ESFlow tool framework.
 
 Provides:
 - Param: typed parameter specification

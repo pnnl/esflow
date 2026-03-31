@@ -2,7 +2,8 @@
 __pycache__/
 *.pyc
 .DS_Store
-archive/
-benchmark/results/*
 output/
 data/
+
+# Benchmark results (large, stored on Zenodo)
+benchmark/results/

@@ -57,7 +57,7 @@ def generate_catalog():
 
     catalog = {
         'version': '3.0',
-        'description': 'ESFlow v3 Analysis Tools',
+        'description': 'ESFlow Analysis Tools',
         'tools': tools_list,
     }
 

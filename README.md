@@ -17,7 +17,7 @@ User describes task    →  Any LLM reads catalog    →  workflow.yaml
 3. **Any LLM** (ChatGPT, Claude, Gemini, Llama, etc.) reads the catalog and generates a YAML workflow from a natural-language request.
 4. **`run_workflow.py`** executes the YAML step-by-step, passing outputs between tools via `${step_id.outputs.key}` references.
 
-## Design Principles (v3)
+## Design Principles
 
 **LLMs connect building blocks. Tools handle internals. Minimize decisions the LLM must make.**
 
@@ -32,15 +32,19 @@ User describes task    →  Any LLM reads catalog    →  workflow.yaml
 
 ```bash
 # Clone and install
-git clone https://github.com/your-username/esflow.git
+git clone https://github.com/pnnl-int/esflow.git
 cd esflow
 pip install -r requirements.txt
 
-# Validate a workflow (no data needed)
-python run_workflow.py workflows/examples/obs_only_validation.yaml --dry-run
+# Download sample data from Zenodo (E3SM output + GRDC observations)
+# https://doi.org/10.5281/zenodo.19350842
+# Extract into data/sample/ so you have data/sample/e3sm/ and data/sample/obs/
 
-# Run the self-test workflow (uses included sample data)
-python run_workflow.py workflows/examples/obs_only_validation.yaml
+# Validate a workflow (no data needed)
+python run_workflow.py reference_workflows/task01_reference.yaml --dry-run
+
+# Run a reference workflow
+python run_workflow.py reference_workflows/task01_reference.yaml
 
 # Reuse existing intermediate files
 python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
