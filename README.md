@@ -1,6 +1,21 @@
 # ESFlow
 
-A protocol-first framework for Earth System Model analysis. Scientists register analysis tools with typed metadata; any LLM reads the auto-generated tool catalog and composes YAML workflows. The human reviews, the engine executes.
+**A protocol-first framework for AI-assisted Earth System Model analysis.**
+
+> Companion repository for: *Zhou et al., "ESFlow: A Protocol-First Agentic AI Framework for Earth System Model Analysis"* (submitted to Geoscientific Model Development, 2026).
+
+ESFlow constrains LLMs to compose validated analysis tools rather than generate arbitrary code. Scientists register tools with typed metadata; any LLM reads the auto-generated tool catalog and produces a declarative YAML workflow. A deterministic engine executes the workflow, making results reproducible and traceable.
+
+## Key Results
+
+![Benchmark results](benchmark/benchmark_results.png)
+
+We benchmarked six LLMs across seven tasks of increasing complexity, comparing the protocol-first approach (a) against unconstrained Python code generation (b). Each cell shows four independent runs, color-coded by outcome.
+
+- **Protocol-first**: 77% overall success rate, 99% for frontier models (Claude Opus 4.6, GPT-5, Gemini 2.5 Flash), zero crashes
+- **Code-generation baseline**: 2% success, 47% crashes, 23% silent failures (plausible but numerically incorrect output)
+- Silent failures in the baseline are correlated across models — multiple LLMs independently make the same "reasonable" but incorrect methodological choices
+- The protocol eliminates methodological silent failures by construction; residual errors are parameter-level mistakes detectable through output inspection
 
 ## How It Works
 
@@ -21,11 +36,10 @@ User describes task    →  Any LLM reads catalog    →  workflow.yaml
 
 **LLMs connect building blocks. Tools handle internals. Minimize decisions the LLM must make.**
 
-- **9 tools, 24 total params** (v2 had 16 tools with ~90 params)
+- **24 tools** across 6 categories (fetchers, loaders, matchers, extractors, analyzers, plotters)
 - **Strict validation**: unknown parameters are rejected immediately
 - **No modal behavior**: each tool does exactly one thing, no mode/format switches
-- **Match by column name**: no `match_by`, `x_column`, `y_column` params — tools match gauge_id columns automatically
-- **Standardized CSV schemas**: 5 schemas, all lowercase column names
+- **Standardized CSV schemas**: all lowercase column names
 - **Simple observation format**: one CSV per gauge (`date`, `discharge_m3s`)
 
 ## Quick Start
@@ -59,19 +73,34 @@ python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
 
 See **[docs/guide.md](docs/guide.md)** for the full protocol, task description examples, and instructions for adding your own tools.
 
-## Tools (9)
+## Tools (24)
 
-| Category | Tool | Params | Description |
-|----------|------|--------|-------------|
-| loaders | `load_obs_metadata` | 1 | Load and validate gauge metadata CSV |
-| matchers | `match_to_grid` | 4 | Match observation gauges to E3SM model grid cells |
-| extractors | `extract_e3sm_timeseries` | 6 | Extract model time series at matched locations |
-| extractors | `extract_obs_timeseries` | 3 | Extract observation time series from per-gauge CSVs |
-| analyzers | `compute_metrics` | 2 | Compute NSE, KGE, PBIAS, RMSE, correlation |
-| analyzers | `compute_climatology` | 1 | Compute monthly climatology (mean by month 1-12) |
-| plotters | `plot_timeseries` | 2 | Multi-panel sim vs obs time series comparison |
-| plotters | `plot_scatter` | 2 | Scatter plot of mean discharge (sim vs obs) |
-| plotters | `plot_map` | 3 | Validation metric values on a geographic map |
+| Category | Tool | Description |
+|----------|------|-------------|
+| fetchers | `fetch_ilamb_data` | Download observation datasets from ILAMB server |
+| loaders | `load_obs_metadata` | Load and validate gauge metadata CSV |
+| matchers | `match_to_grid` | Match observation gauges to E3SM model grid cells |
+| extractors | `extract_e3sm_timeseries` | Extract model time series at matched locations |
+| extractors | `extract_obs_timeseries` | Extract observation time series from per-gauge CSVs |
+| extractors | `extract_gridded_field` | Extract time-mean gridded field from ESM output |
+| extractors | `extract_basin_mean` | Extract basin-mean time series using GeoJSON polygons |
+| analyzers | `compute_metrics` | Compute NSE, KGE, PBIAS, RMSE, correlation |
+| analyzers | `compute_climatology` | Compute monthly climatology (mean by month 1-12) |
+| analyzers | `compute_summary_stats` | Compute mean, std, min, max statistics |
+| analyzers | `compute_spatial_bias` | Compute spatial bias between two gridded fields |
+| analyzers | `compute_zonal_stats` | Area-weighted statistics by latitude band |
+| analyzers | `compute_fdc_metrics` | Flow duration curve metrics (Wasserstein, volume bias) |
+| analyzers | `compute_basin_budget` | Compute per-basin water budget (P, ET, Q, residual) |
+| plotters | `plot_timeseries` | Multi-panel sim vs obs time series comparison |
+| plotters | `plot_scatter` | Scatter plot of mean discharge (sim vs obs) |
+| plotters | `plot_map` | Validation metric values on a geographic map |
+| plotters | `plot_gridded_map` | Global map of a gridded field with optional stats |
+| plotters | `plot_fdc` | Flow duration curve comparison plot |
+| plotters | `plot_bias_comparison` | Side-by-side model, obs, and bias maps |
+| plotters | `plot_basin_timeseries` | Per-basin sim vs obs time series with metrics |
+| plotters | `plot_basin_budget_comparison` | Model vs obs water budget bar charts |
+| plotters | `plot_basin_radar` | Radar charts of multi-metric basin diagnostics |
+| plotters | `plot_water_balance_basins` | Composite water balance figure (global + basins) |
 
 ## Standard Data Schemas
 
@@ -162,7 +191,7 @@ esflow/
 │   └── system_prompt.txt       # System prompt template for LLM workflow generation
 ├── tools/
 │   ├── generate_catalog.py      # Auto-generates tool_catalog.yaml
-│   ├── tool_catalog.yaml        # LLM-readable tool metadata (9 tools, 207 lines)
+│   ├── tool_catalog.yaml        # LLM-readable tool metadata (24 tools)
 │   ├── core/                    # Framework internals
 │   │   ├── base.py              # @esflow_tool, Param, ToolSpec, TOOL_REGISTRY
 │   │   ├── e3sm.py              # ESM utilities (cftime, file discovery, dataset opening)
@@ -170,18 +199,17 @@ esflow/
 │   │   ├── data_io.py           # MOSART/ELM data loading
 │   │   ├── spatial.py           # Grid matching, river tracing
 │   │   └── styling.py           # Plot style presets
+│   ├── fetchers/                # Data fetching tools (1)
 │   ├── loaders/                 # Data loading tools (1)
 │   ├── matchers/                # Gauge matching tools (1)
-│   ├── extractors/              # Time series extraction tools (2)
-│   ├── analyzers/               # Metrics and statistics tools (2)
-│   └── plotters/                # Visualization tools (3)
+│   ├── extractors/              # Data extraction tools (4)
+│   ├── analyzers/               # Metrics and statistics tools (7)
+│   └── plotters/                # Visualization tools (10)
 ├── data/sample/                 # Sample observation data (94 GRDC gauges)
-├── workflows/examples/          # Example YAML workflows
-├── benchmark/
-│   ├── protocol/                # System prompt + task descriptions
-│   ├── baselines/               # Code-gen baseline prompts
-│   ├── run_benchmark.py         # Multi-model benchmark runner
-│   └── results/                 # Auto-generated outputs + scores
-├── scripts/                     # Data conversion utilities
-└── archive/v2/                  # Archived v2 tools (16 tools, ~90 params)
+├── reference_workflows/          # 7 reference YAML workflows
+└── benchmark/
+    ├── protocol/                # System prompt + task descriptions
+    ├── baselines/               # Code-gen baseline prompts
+    ├── run_benchmark.py         # Multi-model benchmark runner
+    └── results/                 # Auto-generated outputs + scores (Zenodo)
 ```
