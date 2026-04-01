@@ -1,0 +1,1 @@
+Benchmark E3SM evapotranspiration against MODIS satellite observations for 1985-1989. Compute the spatial bias and produce a global map of the bias field.
