@@ -50,7 +50,7 @@ git clone https://github.com/pnnl-int/esflow.git
 cd esflow
 pip install -r requirements.txt
 
-# Download sample data from Zenodo (E3SM output + GRDC observations)
+# Download sample data from Zenodo (~529 MB, E3SM output + GRDC observations)
 # https://doi.org/10.5281/zenodo.19350842
 # Extract into data/sample/ so you have data/sample/e3sm/ and data/sample/obs/
 
@@ -149,8 +149,11 @@ ESFlow includes a benchmark runner that evaluates how well different LLMs compos
 | S3 | Scientifically correct output (right variables, methods, interpretation) | Human review |
 
 ```bash
+# Set up API keys
+cp .env.example .env
+# Edit .env with your API keys
+
 # Quick test
-export LLM_API_KEY="your-key-here"
 python benchmark/run_benchmark.py --task benchmark/protocol/task_01_obs_summary.txt
 
 # Full benchmark (all models, 3 runs each)
