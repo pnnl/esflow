@@ -1,0 +1,89 @@
+name: Basin-Scale Streamflow Analysis
+description: 'Performs a basin-scale streamflow analysis for six major river basins
+  over the 5-year period 1985-1989.
+
+  It matches observation gauges to the E3SM model grid, extracts simulated and observed
+  discharge,
+
+  computes validation metrics, and generates per-basin plots showing the drainage
+  basin boundary
+
+  on a map and a sim-vs-obs discharge time series.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gemini-2.5-flash_protocol/task_05_basin_streamflow/run1_output
+  obs_dir: ./data/sample/obs/streamflow/
+  gauge_metadata_file: ./data/sample/obs/gauge_metadata.csv
+  basin_polygons_file: ./data/sample/obs/basin_polygons.geojson
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  component: mosart
+  model_variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+  target_gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  style: cream_ink
+steps:
+- id: load_gauge_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.gauge_metadata_file}
+  outputs:
+    metadata_file: ${settings.output_dir}/gauge_metadata_validated.csv
+    n_gauges: n_gauges_total
+- id: match_gauges_to_grid
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+  outputs:
+    matched_file: ${settings.output_dir}/matched_gauges.csv
+    n_matched: n_matched_gauges
+- id: extract_e3sm_streamflow
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+    variable: ${settings.model_variable}
+    locations_file: ${match_gauges_to_grid.outputs.matched_file}
+    years: ${settings.years}
+  outputs:
+    timeseries_file: ${settings.output_dir}/e3sm_streamflow_1985-1989.csv
+    n_locations: n_e3sm_extracted
+- id: extract_obs_streamflow
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.obs_dir}
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+    years: ${settings.years}
+    gauge_ids: ${settings.target_gauge_ids}
+  outputs:
+    timeseries_file: ${settings.output_dir}/obs_streamflow_1985-1989.csv
+    n_gauges: n_obs_extracted
+- id: compute_streamflow_metrics
+  tool: compute_metrics
+  params:
+    sim_file: ${extract_e3sm_streamflow.outputs.timeseries_file}
+    obs_file: ${extract_obs_streamflow.outputs.timeseries_file}
+  outputs:
+    metrics_file: ${settings.output_dir}/streamflow_metrics.csv
+    n_gauges: n_metrics_computed
+- id: plot_basin_timeseries_comparison
+  tool: plot_basin_timeseries
+  params:
+    basins_file: ${settings.basin_polygons_file}
+    sim_file: ${extract_e3sm_streamflow.outputs.timeseries_file}
+    obs_file: ${extract_obs_streamflow.outputs.timeseries_file}
+    locations_file: ${load_gauge_metadata.outputs.metadata_file}
+    gauge_ids: ${settings.target_gauge_ids}
+    metrics_file: ${compute_streamflow_metrics.outputs.metrics_file}
+  outputs:
+    plot_files: ${settings.output_dir}/basin_timeseries_plots.json

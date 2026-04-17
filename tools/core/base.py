@@ -1,10 +1,10 @@
 """
-ESFlow tool framework.
+ESMFlow v3 tool framework.
 
 Provides:
 - Param: typed parameter specification
 - ToolSpec: tool metadata (name, description, inputs, outputs)
-- @esflow_tool: decorator for registration and validation
+- @esmflow_tool: decorator for registration and validation
 """
 
 import functools
@@ -159,8 +159,8 @@ class ToolSpec:
 TOOL_REGISTRY: Dict[str, ToolSpec] = {}
 
 
-def esflow_tool(spec: ToolSpec):
-    """Decorator for ESFlow tools.
+def esmflow_tool(spec: ToolSpec):
+    """Decorator for ESMFlow tools.
 
     - Registers tool in TOOL_REGISTRY
     - Validates and coerces params via spec

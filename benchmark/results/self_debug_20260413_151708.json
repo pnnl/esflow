@@ -1,0 +1,217 @@
+[
+  {
+    "status": "skipped_resume",
+    "reason": "v1 passed",
+    "mode": "baseline",
+    "model": "claude-opus-4-6",
+    "task": "task_02_seasonal_runoff",
+    "run": 1
+  },
+  {
+    "status": "skipped_resume",
+    "reason": "v1 passed",
+    "mode": "baseline",
+    "model": "gpt-5",
+    "task": "task_02_seasonal_runoff",
+    "run": 1
+  },
+  {
+    "status": "skipped_resume",
+    "reason": "v1 passed",
+    "mode": "baseline",
+    "model": "gpt-5",
+    "task": "task_02_seasonal_runoff",
+    "run": 2
+  },
+  {
+    "status": "skipped_resume",
+    "reason": "v2 passed",
+    "mode": "baseline",
+    "model": "gpt-5",
+    "task": "task_02_seasonal_runoff",
+    "run": 4
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "gemini-2.5-flash",
+    "task": "task_02_seasonal_runoff",
+    "run": 1
+  },
+  {
+    "status": "skipped_resume",
+    "reason": "v1 passed",
+    "mode": "baseline",
+    "model": "gemini-2.5-flash",
+    "task": "task_02_seasonal_runoff",
+    "run": 2
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "gemini-2.5-flash",
+    "task": "task_02_seasonal_runoff",
+    "run": 3
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "gemini-2.5-flash",
+    "task": "task_02_seasonal_runoff",
+    "run": 4
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "o4-mini",
+    "task": "task_02_seasonal_runoff",
+    "run": 2
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "o4-mini",
+    "task": "task_02_seasonal_runoff",
+    "run": 3
+  },
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_02_seasonal_runoff/run4_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_02_seasonal_runoff/run4_debug/v0",
+        "passed": false,
+        "error": "NotImplementedError: 'item' is not yet a valid method on dask arrays"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_02_seasonal_runoff/run4_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "baseline",
+    "model": "o4-mini",
+    "task": "task_02_seasonal_runoff",
+    "run": 4
+  },
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_02_seasonal_runoff/run1_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_02_seasonal_runoff/run1_debug/v0",
+        "passed": false,
+        "error": "FileNotFoundError: No ELM files found matching pattern: sample.v3.LR.historical.h0.h0.YYYY-MM.nc"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_02_seasonal_runoff/run1_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "baseline",
+    "model": "claude-haiku-4-5-20251001",
+    "task": "task_02_seasonal_runoff",
+    "run": 1
+  },
+  {
+    "status": "skip",
+    "reason": "Empty error output \u2014 may not be a real crash",
+    "mode": "baseline",
+    "model": "phi-4",
+    "task": "task_02_seasonal_runoff",
+    "run": 1
+  },
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run2_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run2_debug/v0",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run2_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "baseline",
+    "model": "phi-4",
+    "task": "task_02_seasonal_runoff",
+    "run": 2
+  },
+  {
+    "status": "exhausted",
+    "rounds_used": 3,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run3_debug/v3",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run3_debug/v0",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run3_debug/v1",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      },
+      {
+        "version": "v2",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run3_debug/v2",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      },
+      {
+        "version": "v3",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run3_debug/v3",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      }
+    ],
+    "mode": "baseline",
+    "model": "phi-4",
+    "task": "task_02_seasonal_runoff",
+    "run": 3
+  },
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run4_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run4_debug/v0",
+        "passed": false,
+        "error": "ValueError: too many values to unpack (expected 2)"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_02_seasonal_runoff/run4_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "baseline",
+    "model": "phi-4",
+    "task": "task_02_seasonal_runoff",
+    "run": 4
+  }
+]

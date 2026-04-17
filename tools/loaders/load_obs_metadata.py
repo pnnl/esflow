@@ -12,7 +12,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 SPEC = ToolSpec(
     name='load_obs_metadata',
@@ -30,7 +30,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     metadata_file = config['metadata_file']
 

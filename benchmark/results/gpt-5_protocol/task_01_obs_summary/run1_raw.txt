@@ -1,0 +1,44 @@
+name: "Obs Streamflow Summary 1985-1989"
+description: |
+  Load GRDC gauge metadata, extract monthly streamflow observations for six selected gauges (Amazon 3629000, Missouri 4121801, Columbia 4115200, Danube 6742900, Mekong 2969100, Orange 1159100) from 1985–1989, and compute per-gauge summary statistics (mean, std, min, max).
+
+settings:
+  case_name: "task01_obs_summary"
+  data_dir: "./data"
+  output_dir: "./output/task01_obs_summary"
+  style: cream_ink
+  obs_metadata: "./data/sample/obs/gauge_metadata.csv"
+  obs_streamflow_dir: "./data/sample/obs/streamflow"
+
+steps:
+  - id: load_gauge_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.obs_metadata}"
+    outputs:
+      metadata_file: gauge_metadata_validated.csv
+
+  - id: extract_obs_timeseries_six_gauges
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.obs_streamflow_dir}"
+      gauge_metadata: "${load_gauge_metadata.outputs.metadata_file}"
+      years:
+        - 1985
+        - 1986
+        - 1987
+        - 1988
+        - 1989
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+    outputs:
+      timeseries_file: obs_streamflow_1985-1989_six_gauges.csv
+
+  - id: compute_obs_summary_stats
+    tool: compute_summary_stats
+    params:
+      timeseries_file: "${extract_obs_timeseries_six_gauges.outputs.timeseries_file}"
+      gauge_metadata: "${load_gauge_metadata.outputs.metadata_file}"
+      top_n: 0
+      rank_by: mean
+    outputs:
+      stats_file: obs_streamflow_stats_1985-1989_six_gauges.csv

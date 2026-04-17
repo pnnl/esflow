@@ -1,45 +1,59 @@
 # ESFlow
 
-**A protocol-first framework for AI-assisted Earth System Model analysis.**
+A module-grounded framework for Earth System Model analysis. Scientists register analysis tools with typed metadata; any LLM reads the auto-generated tool catalog and composes YAML workflows. The human reviews, the engine executes.
 
-> Companion repository for: *Zhou et al., "ESFlow: A Protocol-First Agentic AI Framework for Earth System Model Analysis"* (submitted to Geoscientific Model Development, 2026).
+## Associated Paper
 
-ESFlow constrains LLMs to compose validated analysis tools rather than generate arbitrary code. Scientists register tools with typed metadata; any LLM reads the auto-generated tool catalog and produces a declarative YAML workflow. A deterministic engine executes the workflow, making results reproducible and traceable.
+This repository accompanies the manuscript:
 
-## Key Results
+> **Can We Trust LLMs for Complex Earth System Model Analysis? Silent Failure and Evidence from Module-Grounded Benchmarking**
+> Tian Zhou, Yun Qian, L. Ruby Leung
+> Pacific Northwest National Laboratory
+> Submitted to *Geoscientific Model Development* (GMD), 2026
 
-![Benchmark results](benchmark/benchmark_results.png)
+The paper introduces ESFlow and benchmarks it against unconstrained LLM code generation across six contemporary LLMs and seven E3SM land-surface-hydrology analysis tasks, with a focus on silent failures — plausible, well-formatted output that numerically disagrees with hand-crafted references. A frozen snapshot of this repository — together with the sample data (E3SM output, GRDC streamflow) and full per-model benchmark outputs — is archived on Zenodo (DOI: 10.5281/zenodo.19350842).
 
-We benchmarked six LLMs across seven tasks of increasing complexity, comparing the protocol-first approach (a) against unconstrained Python code generation (b). Each cell shows four independent runs, color-coded by outcome.
+Correspondence: Tian Zhou (<tian.zhou@pnnl.gov>).
 
-- **Protocol-first**: 77% overall success rate, 99% for frontier models (Claude Opus 4.6, GPT-5, Gemini 2.5 Flash), zero crashes
-- **Code-generation baseline**: 2% success, 47% crashes, 23% silent failures (plausible but numerically incorrect output)
-- Silent failures in the baseline are correlated across models — multiple LLMs independently make the same "reasonable" but incorrect methodological choices
-- The protocol eliminates methodological silent failures by construction; residual errors are parameter-level mistakes detectable through output inspection
+### Cite this work
+
+```bibtex
+@article{zhou_2026_esflow,
+  author  = {Zhou, Tian and Qian, Yun and Leung, L. Ruby},
+  title   = {Can We Trust {LLMs} for Complex {Earth} System Model Analysis?
+             Silent Failure and Evidence from Module-Grounded Benchmarking},
+  journal = {Geoscientific Model Development},
+  year    = {2026},
+  note    = {Submitted}
+}
+```
+
+The citation will be updated with volume, pages, and DOI once the paper is accepted.
 
 ## How It Works
 
 ```
-Scientist writes tool  →  @esflow_tool decorator  →  tool_catalog.yaml (auto)
+Scientist writes tool  →  @esmflow_tool decorator  →  tool_catalog.yaml (auto)
                                                             ↓
 User describes task    →  Any LLM reads catalog    →  workflow.yaml
                                                             ↓
                           run_workflow.py           →  figures, metrics, CSVs
 ```
 
-1. **Tools** are Python functions decorated with `@esflow_tool(ToolSpec(...))`. The decorator registers typed inputs and outputs, validates parameters, and rejects unknown params.
+1. **Tools** are Python functions decorated with `@esmflow_tool(ToolSpec(...))`. The decorator registers typed inputs and outputs, validates parameters, and rejects unknown params.
 2. **`generate_catalog.py`** auto-discovers all tools and writes `tool_catalog.yaml` — the sole interface between LLMs and tools.
 3. **Any LLM** (ChatGPT, Claude, Gemini, Llama, etc.) reads the catalog and generates a YAML workflow from a natural-language request.
 4. **`run_workflow.py`** executes the YAML step-by-step, passing outputs between tools via `${step_id.outputs.key}` references.
 
-## Design Principles
+## Design Principles (v3)
 
 **LLMs connect building blocks. Tools handle internals. Minimize decisions the LLM must make.**
 
-- **24 tools** across 6 categories (fetchers, loaders, matchers, extractors, analyzers, plotters)
+- **15 tools, 45 total params** (v2 had 16 tools with ~90 params)
 - **Strict validation**: unknown parameters are rejected immediately
 - **No modal behavior**: each tool does exactly one thing, no mode/format switches
-- **Standardized CSV schemas**: all lowercase column names
+- **Match by column name**: no `match_by`, `x_column`, `y_column` params — tools match gauge_id columns automatically
+- **Standardized CSV schemas**: 5 schemas, all lowercase column names
 - **Simple observation format**: one CSV per gauge (`date`, `discharge_m3s`)
 
 ## Quick Start
@@ -50,15 +64,11 @@ git clone https://github.com/pnnl-int/esflow.git
 cd esflow
 pip install -r requirements.txt
 
-# Download sample data from Zenodo (~529 MB, E3SM output + GRDC observations)
-# https://doi.org/10.5281/zenodo.19350842
-# Extract into data/sample/ so you have data/sample/e3sm/ and data/sample/obs/
-
 # Validate a workflow (no data needed)
-python run_workflow.py reference_workflows/task01_reference.yaml --dry-run
+python run_workflow.py workflows/examples/obs_only_validation.yaml --dry-run
 
-# Run a reference workflow
-python run_workflow.py reference_workflows/task01_reference.yaml
+# Run the self-test workflow (uses included sample data)
+python run_workflow.py workflows/examples/obs_only_validation.yaml
 
 # Reuse existing intermediate files
 python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
@@ -73,34 +83,25 @@ python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
 
 See **[docs/guide.md](docs/guide.md)** for the full protocol, task description examples, and instructions for adding your own tools.
 
-## Tools (24)
+## Tools (15)
 
-| Category | Tool | Description |
-|----------|------|-------------|
-| fetchers | `fetch_ilamb_data` | Download observation datasets from ILAMB server |
-| loaders | `load_obs_metadata` | Load and validate gauge metadata CSV |
-| matchers | `match_to_grid` | Match observation gauges to E3SM model grid cells |
-| extractors | `extract_e3sm_timeseries` | Extract model time series at matched locations |
-| extractors | `extract_obs_timeseries` | Extract observation time series from per-gauge CSVs |
-| extractors | `extract_gridded_field` | Extract time-mean gridded field from ESM output |
-| extractors | `extract_basin_mean` | Extract basin-mean time series using GeoJSON polygons |
-| analyzers | `compute_metrics` | Compute NSE, KGE, PBIAS, RMSE, correlation |
-| analyzers | `compute_climatology` | Compute monthly climatology (mean by month 1-12) |
-| analyzers | `compute_summary_stats` | Compute mean, std, min, max statistics |
-| analyzers | `compute_spatial_bias` | Compute spatial bias between two gridded fields |
-| analyzers | `compute_zonal_stats` | Area-weighted statistics by latitude band |
-| analyzers | `compute_fdc_metrics` | Flow duration curve metrics (Wasserstein, volume bias) |
-| analyzers | `compute_basin_budget` | Compute per-basin water budget (P, ET, Q, residual) |
-| plotters | `plot_timeseries` | Multi-panel sim vs obs time series comparison |
-| plotters | `plot_scatter` | Scatter plot of mean discharge (sim vs obs) |
-| plotters | `plot_map` | Validation metric values on a geographic map |
-| plotters | `plot_gridded_map` | Global map of a gridded field with optional stats |
-| plotters | `plot_fdc` | Flow duration curve comparison plot |
-| plotters | `plot_bias_comparison` | Side-by-side model, obs, and bias maps |
-| plotters | `plot_basin_timeseries` | Per-basin sim vs obs time series with metrics |
-| plotters | `plot_basin_budget_comparison` | Model vs obs water budget bar charts |
-| plotters | `plot_basin_radar` | Radar charts of multi-metric basin diagnostics |
-| plotters | `plot_water_balance_basins` | Composite water balance figure (global + basins) |
+| # | Category | Tool | Params | Description |
+|---|----------|------|--------|-------------|
+| 1 | fetchers | `fetch_ilamb_data` | 2 | Download obs NetCDF from ILAMB server (18 variable/dataset pairs) |
+| 2 | loaders | `load_obs_metadata` | 1 | Load and validate gauge metadata CSV |
+| 3 | matchers | `match_to_grid` | 4 | Match gauges to E3SM model grid |
+| 4 | extractors | `extract_e3sm_timeseries` | 7 | Extract model time series at gauge locations (monthly/daily) |
+| 5 | extractors | `extract_obs_timeseries` | 3 | Extract obs from per-gauge CSVs |
+| 6 | extractors | `extract_gridded_field` | 6 | Extract 2D field from E3SM or obs NetCDF; supports composite variables |
+| 7 | analyzers | `compute_climatology` | 1 | Monthly means (1-12) |
+| 8 | analyzers | `compute_spatial_bias` | 2 | Spatial bias (A minus B) with regridding |
+| 9 | analyzers | `compute_zonal_stats` | 3 | Area-weighted global/latitude-band means |
+| 10 | analyzers | `compute_summary_stats` | 4 | Mean/std/min/max per column with optional ranking |
+| 11 | analyzers | `compute_metrics` | 2 | NSE, KGE, PBIAS, RMSE, correlation |
+| 12 | plotters | `plot_scatter` | 2 | Mean discharge scatter plot |
+| 13 | plotters | `plot_gridded_map` | 3 | 2D field on geographic map |
+| 14 | plotters | `plot_timeseries` | 2 | Sim vs obs time series panels |
+| 15 | plotters | `plot_map` | 3 | Metric values at gauge locations on a map |
 
 ## Standard Data Schemas
 
@@ -113,6 +114,9 @@ Tools communicate through typed CSV files. The catalog declares exact column sch
 | **timeseries** | `time` | one column per `gauge_id` | extractors | analyzers, plotters |
 | **climatology** | `month` (1-12) | one column per `gauge_id` | compute_climatology | plotters |
 | **metrics** | row | `gauge_id`, `nse`, `kge`, `pbias`, `rmse`, `correlation`, `n_valid` | compute_metrics | plotters |
+| **summary_stats** | row | `column_name`, `mean`, `std`, `min`, `max` (+ optional `river_name`, `area_km2`) | compute_summary_stats | — |
+| **zonal_stats** | row | `region`, `mean`, `area_weighted_mean` | compute_zonal_stats | — |
+| **bias_stats** | row | `mean_bias`, `rmse`, `spatial_correlation` | compute_spatial_bias | — |
 
 ## Sample Data
 
@@ -137,27 +141,66 @@ data/sample/obs/
 
 ## Benchmarking LLMs
 
-ESFlow includes a benchmark runner that evaluates how well different LLMs compose workflows from the tool catalog.
+ESFlow includes a benchmark system that evaluates LLMs in two modes:
 
-### Scoring Levels
+- **Protocol mode**: LLM generates a YAML workflow using the tool catalog
+- **Baseline mode**: LLM generates free-form Python code (no tools)
 
-| Level | What it tests | Automated? |
-|-------|--------------|------------|
-| S0 | Valid YAML with `steps` key | Yes |
-| S1 | Passes `--dry-run` (correct tool names, required params, valid wiring) | Yes |
-| S2 | Executes without runtime error (requires data) | Yes |
-| S3 | Scientifically correct output (right variables, methods, interpretation) | Human review |
+### Reproducing the Paper Benchmark
+
+The benchmark in the paper is reproduced in four stages. Sample data (E3SM output and GRDC streamflow) is not included in this repository to keep it lightweight — a frozen snapshot of this code together with the sample data and full per-model benchmark outputs is archived on Zenodo (DOI: 10.5281/zenodo.19350842).
 
 ```bash
-# Set up API keys
-cp .env.example .env
-# Edit .env with your API keys
+# 1. Download sample data from Zenodo and unpack into data/
+#    (produces data/sample/e3sm/... and data/sample/obs/...)
 
-# Quick test
+# 2. Run the reference workflows to generate ground-truth outputs
+for t in 01 02 03 04 05 06 07; do
+    python run_workflow.py reference_workflows/task${t}_reference.yaml
+done
+
+# 3. Run the benchmark for both conditions (6 models x 7 tasks x 4 runs each)
+export LLM_API_KEY="your-key-here"
+python benchmark/run_benchmark.py --all --runs 4 --mode protocol
+python benchmark/run_benchmark.py --all --runs 4 --mode baseline
+
+# 4. Run the self-debug experiment on crashed runs (up to 3 repair rounds)
+python benchmark/self_debug_crashes.py --max-rounds 3
+
+# 5. Grade and merge results
+python benchmark/structural_grading.py
+python benchmark/grade_selfdebug.py
+python benchmark/merge_grades.py
+python benchmark/merge_grades_selfdebug.py
+```
+
+The paper's reference run (`claude-opus-4-6` protocol `run2`) is pre-included in `benchmark/results/claude-opus-4-6_protocol/` — so Step 2 only needs to be re-run if you change tools or want fresh reference outputs.
+
+### 3-Step Structural Grading
+
+| Step | What it checks | Applies to | Auto? |
+|------|---------------|------------|-------|
+| **Step 1: Crash** | Final deliverable missing (CSV for T1, PNG for T2–T7) | Both modes | Yes |
+| **Step 2: Success** | Key data file matches reference within 1% tolerance | Protocol only | Yes |
+| **Step 3: Manual review** | Human assigns silent failure or obvious failure | Undetermined | No |
+
+**Final grades**: crash, success, silent failure, obvious failure.
+
+Reference run: `claude-opus-4-6` protocol run2. Grading script: `benchmark/structural_grading.py`. Manual labels: `benchmark/results/manual_overrides.json`.
+
+```bash
+# Protocol mode (default)
+export LLM_API_KEY="your-key-here"
 python benchmark/run_benchmark.py --task benchmark/protocol/task_01_obs_summary.txt
 
-# Full benchmark (all models, 3 runs each)
-python benchmark/run_benchmark.py --all --runs 3
+# Baseline mode (free-form Python)
+python benchmark/run_benchmark.py --task benchmark/baselines/task_01_obs_summary.txt --baseline
+
+# Full benchmark (all models, 4 runs each, both modes)
+python benchmark/run_benchmark.py --all --runs 4
+
+# Run structural grading
+python benchmark/structural_grading.py
 
 # Local models via LM Studio
 python benchmark/run_benchmark.py --local
@@ -179,7 +222,7 @@ Options:
 
 See **[docs/guide.md](docs/guide.md)** for a complete walkthrough with examples. The short version:
 
-1. Create `tools/<category>/my_tool.py` with a `ToolSpec` and `@esflow_tool` decorator
+1. Create `tools/<category>/my_tool.py` with a `ToolSpec` and `@esmflow_tool` decorator
 2. Run `python tools/generate_catalog.py --overwrite` to update the catalog
 3. The LLM sees your tool in the catalog automatically
 
@@ -194,25 +237,28 @@ esflow/
 │   └── system_prompt.txt       # System prompt template for LLM workflow generation
 ├── tools/
 │   ├── generate_catalog.py      # Auto-generates tool_catalog.yaml
-│   ├── tool_catalog.yaml        # LLM-readable tool metadata (24 tools)
+│   ├── tool_catalog.yaml        # LLM-readable tool metadata (15 tools, 45 params)
 │   ├── core/                    # Framework internals
-│   │   ├── base.py              # @esflow_tool, Param, ToolSpec, TOOL_REGISTRY
+│   │   ├── base.py              # @esmflow_tool, Param, ToolSpec, TOOL_REGISTRY
 │   │   ├── e3sm.py              # ESM utilities (cftime, file discovery, dataset opening)
 │   │   ├── schemas.py           # CSV schema documentation
 │   │   ├── data_io.py           # MOSART/ELM data loading
 │   │   ├── spatial.py           # Grid matching, river tracing
 │   │   └── styling.py           # Plot style presets
-│   ├── fetchers/                # Data fetching tools (1)
+│   ├── fetchers/                # Remote data fetchers (1)
 │   ├── loaders/                 # Data loading tools (1)
 │   ├── matchers/                # Gauge matching tools (1)
-│   ├── extractors/              # Data extraction tools (4)
-│   ├── analyzers/               # Metrics and statistics tools (7)
-│   └── plotters/                # Visualization tools (10)
+│   ├── extractors/              # Time series & field extraction tools (3)
+│   ├── analyzers/               # Metrics, stats, bias, zonal tools (5)
+│   └── plotters/                # Visualization tools (4)
 ├── data/sample/                 # Sample observation data (94 GRDC gauges)
-├── reference_workflows/          # 7 reference YAML workflows
-└── benchmark/
-    ├── protocol/                # System prompt + task descriptions
-    ├── baselines/               # Code-gen baseline prompts
-    ├── run_benchmark.py         # Multi-model benchmark runner
-    └── results/                 # Auto-generated outputs + scores (Zenodo)
+├── workflows/examples/          # Example & reference YAML workflows
+├── benchmark/
+│   ├── protocol/                # System prompt + task descriptions (protocol mode)
+│   ├── baselines/               # Task descriptions for free-form Python (baseline mode)
+│   ├── run_benchmark.py         # Multi-model, mode-aware benchmark runner
+│   ├── structural_grading.py    # 3-step reproducible grading script
+│   └── results/                 # Outputs, scores, manual review labels
+├── scripts/                     # Data conversion utilities
+└── archive/v2/                  # Archived v2 tools (16 tools, ~90 params)
 ```

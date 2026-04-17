@@ -1,0 +1,730 @@
+#!/usr/bin/env python
+"""
+Compare E3SM simulated river discharge against observations using flow duration curves.
+Computes distributional metrics and generates comparison visualizations.
+"""
+
+import os
+import sys
+import glob
+import warnings
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.gridspec import GridSpec
+from scipy.stats import gaussian_kde
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import json
+from datetime import datetime
+import cftime
+
+warnings.filterwarnings('ignore')
+
+# Configuration
+E3SM_BASE = "./data/sample/e3sm/"
+OBS_BASE = "./data/sample/obs/"
+CASE_NAME = "sample.v3.LR.historical"
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_04_streamflow_fdc/run1_debug/v3/output"
+START_YEAR = 1985
+END_YEAR = 1989
+
+# Target gauges for detailed analysis
+TARGET_GAUGES = {
+    'Amazon': 3629000,
+    'Missouri': 4121801,
+    'Columbia': 4115200,
+    'Danube': 6742900,
+    'Mekong': 2969100,
+    'Orange': 1159100
+}
+
+def wasserstein_distance(u_values, v_values):
+    """
+    Compute Wasserstein distance (Earth Mover's Distance) between two 1D distributions.
+    Implementation of the 1D Wasserstein distance.
+    """
+    u_sorted = np.sort(u_values)
+    v_sorted = np.sort(v_values)
+    
+    # Interpolate to common length
+    n = max(len(u_sorted), len(v_sorted))
+    u_interp = np.interp(np.linspace(0, 1, n), np.linspace(0, 1, len(u_sorted)), u_sorted)
+    v_interp = np.interp(np.linspace(0, 1, n), np.linspace(0, 1, len(v_sorted)), v_sorted)
+    
+    # Compute L1 distance
+    return np.mean(np.abs(u_interp - v_interp))
+
+def create_output_dir():
+    """Create output directory if it doesn't exist."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Output directory: {OUTPUT_DIR}")
+
+def load_gauge_metadata():
+    """Load gauge metadata from CSV."""
+    try:
+        metadata_file = os.path.join(OBS_BASE, "gauge_metadata.csv")
+        df = pd.read_csv(metadata_file)
+        print(f"Loaded {len(df)} gauges from metadata")
+        return df
+    except Exception as e:
+        print(f"Error loading gauge metadata: {e}")
+        return None
+
+def load_observation_data(gauge_id, start_year, end_year):
+    """Load observation data for a specific gauge."""
+    try:
+        obs_file = os.path.join(OBS_BASE, "streamflow", f"{gauge_id}.csv")
+        if not os.path.exists(obs_file):
+            return None
+        
+        df = pd.read_csv(obs_file)
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Filter to date range
+        mask = (df['date'].dt.year >= start_year) & (df['date'].dt.year <= end_year)
+        df = df[mask].copy()
+        
+        if len(df) == 0:
+            return None
+        
+        return df.set_index('date')
+    except Exception as e:
+        print(f"Error loading observation data for gauge {gauge_id}: {e}")
+        return None
+
+def convert_cftime_to_datetime(times):
+    """Convert cftime objects to pandas datetime."""
+    try:
+        # Try direct conversion first
+        return pd.to_datetime(times)
+    except:
+        try:
+            # Convert cftime to datetime strings then to datetime
+            time_strs = [str(t) for t in times]
+            return pd.to_datetime(time_strs)
+        except:
+            # Last resort: extract year, month, day
+            dates = []
+            for t in times:
+                if hasattr(t, 'year'):
+                    dates.append(datetime(t.year, t.month, t.day))
+                else:
+                    dates.append(pd.Timestamp(str(t)))
+            return pd.DatetimeIndex(dates)
+
+def load_mosart_data(start_year, end_year):
+    """Load MOSART monthly discharge data."""
+    try:
+        mosart_files = sorted(glob.glob(
+            os.path.join(E3SM_BASE, "rof", f"{CASE_NAME}.mosart.h0.*.nc")
+        ))
+        
+        if not mosart_files:
+            print("No MOSART files found")
+            return None
+        
+        # Filter files to date range
+        filtered_files = []
+        for f in mosart_files:
+            # Extract YYYY-MM from filename
+            basename = os.path.basename(f)
+            date_str = basename.split('.')[-2]  # Get YYYY-MM
+            year = int(date_str.split('-')[0])
+            if start_year <= year <= end_year:
+                filtered_files.append(f)
+        
+        if not filtered_files:
+            print("No MOSART files in date range")
+            return None
+        
+        print(f"Loading {len(filtered_files)} MOSART files")
+        ds = xr.open_mfdataset(filtered_files, combine='by_coords')
+        return ds
+    except Exception as e:
+        print(f"Error loading MOSART data: {e}")
+        return None
+
+def find_nearest_grid_cell(lat, lon, grid_lats, grid_lons):
+    """Find nearest grid cell to a given lat/lon point."""
+    # Handle 1D and 2D grids
+    if grid_lats.ndim == 1 and grid_lons.ndim == 1:
+        # 1D grids - create meshgrid
+        lons_2d, lats_2d = np.meshgrid(grid_lons, grid_lats)
+    else:
+        lats_2d = grid_lats
+        lons_2d = grid_lons
+    
+    distances = np.sqrt((lats_2d - lat)**2 + (lons_2d - lon)**2)
+    idx = np.nanargmin(distances)
+    return np.unravel_index(idx, distances.shape)
+
+def extract_model_discharge(ds, gauge_lat, gauge_lon):
+    """Extract discharge time series from MOSART for a gauge location."""
+    try:
+        if 'RIVER_DISCHARGE_OVER_LAND_LIQ' not in ds.data_vars:
+            return None
+        
+        # Get grid coordinates
+        grid_lats = ds['lat'].values
+        grid_lons = ds['lon'].values
+        
+        # Find nearest cell
+        i, j = find_nearest_grid_cell(gauge_lat, gauge_lon, grid_lats, grid_lons)
+        
+        # Extract time series - handle different dimension orders
+        discharge_var = ds['RIVER_DISCHARGE_OVER_LAND_LIQ']
+        
+        # Try different indexing approaches
+        try:
+            discharge = discharge_var[:, i, j].values
+        except (IndexError, ValueError):
+            try:
+                discharge = discharge_var[i, j, :].values
+            except (IndexError, ValueError):
+                try:
+                    discharge = discharge_var[:, j, i].values
+                except (IndexError, ValueError):
+                    return None
+        
+        times = ds['time'].values
+        
+        # Convert cftime to datetime
+        times_pd = convert_cftime_to_datetime(times)
+        
+        # Convert to pandas Series
+        df = pd.DataFrame({
+            'discharge_m3s': discharge
+        }, index=times_pd)
+        
+        return df
+    except Exception as e:
+        print(f"Error extracting model discharge: {e}")
+        return None
+
+def compute_fdc_metrics(obs_discharge, sim_discharge):
+    """Compute flow duration curve metrics."""
+    try:
+        # Remove NaN values
+        obs_clean = obs_discharge.dropna()
+        sim_clean = sim_discharge.dropna()
+        
+        if len(obs_clean) < 10 or len(sim_clean) < 10:
+            return None
+        
+        # Compute quantiles
+        obs_q10 = np.percentile(obs_clean, 10)
+        obs_q50 = np.percentile(obs_clean, 50)
+        obs_q90 = np.percentile(obs_clean, 90)
+        
+        sim_q10 = np.percentile(sim_clean, 10)
+        sim_q50 = np.percentile(sim_clean, 50)
+        sim_q90 = np.percentile(sim_clean, 90)
+        
+        # Volume bias
+        obs_mean = obs_clean.mean()
+        sim_mean = sim_clean.mean()
+        volume_bias = (sim_mean - obs_mean) / obs_mean if obs_mean > 0 else np.nan
+        
+        # Wasserstein distance (normalized by mean observation)
+        wd = wasserstein_distance(obs_clean.values, sim_clean.values)
+        wd_normalized = wd / obs_mean if obs_mean > 0 else np.nan
+        
+        # Quantile ratios
+        q10_ratio = sim_q10 / obs_q10 if obs_q10 > 0 else np.nan
+        q50_ratio = sim_q50 / obs_q50 if obs_q50 > 0 else np.nan
+        q90_ratio = sim_q90 / obs_q90 if obs_q90 > 0 else np.nan
+        
+        metrics = {
+            'obs_mean': obs_mean,
+            'sim_mean': sim_mean,
+            'volume_bias': volume_bias,
+            'wasserstein_distance': wd,
+            'wasserstein_distance_normalized': wd_normalized,
+            'obs_q10': obs_q10,
+            'obs_q50': obs_q50,
+            'obs_q90': obs_q90,
+            'sim_q10': sim_q10,
+            'sim_q50': sim_q50,
+            'sim_q90': sim_q90,
+            'q10_ratio': q10_ratio,
+            'q50_ratio': q50_ratio,
+            'q90_ratio': q90_ratio,
+            'obs_count': len(obs_clean),
+            'sim_count': len(sim_clean)
+        }
+        
+        return metrics
+    except Exception as e:
+        print(f"Error computing FDC metrics: {e}")
+        return None
+
+def compute_fdc_percentiles(obs_discharge, sim_discharge, percentiles=None):
+    """Compute FDC percentile values."""
+    if percentiles is None:
+        percentiles = np.arange(0, 101, 5)
+    
+    try:
+        obs_clean = obs_discharge.dropna()
+        sim_clean = sim_discharge.dropna()
+        
+        if len(obs_clean) < 10 or len(sim_clean) < 10:
+            return None
+        
+        obs_percentiles = np.percentile(obs_clean, percentiles)
+        sim_percentiles = np.percentile(sim_clean, percentiles)
+        
+        return {
+            'percentiles': percentiles,
+            'obs_percentiles': obs_percentiles,
+            'sim_percentiles': sim_percentiles
+        }
+    except Exception as e:
+        print(f"Error computing FDC percentiles: {e}")
+        return None
+
+def process_all_gauges(metadata_df, mosart_ds):
+    """Process all gauges and compute metrics."""
+    results = []
+    fdc_data = {}
+    
+    for idx, row in metadata_df.iterrows():
+        gauge_id = row['gauge_id']
+        gauge_lat = row['lat']
+        gauge_lon = row['lon']
+        river_name = row.get('river_name', 'Unknown')
+        
+        print(f"Processing gauge {gauge_id} ({river_name})...")
+        
+        # Load observations
+        obs_df = load_observation_data(gauge_id, START_YEAR, END_YEAR)
+        if obs_df is None or len(obs_df) == 0:
+            print(f"  No observation data for gauge {gauge_id}")
+            continue
+        
+        # Extract model data
+        sim_df = extract_model_discharge(mosart_ds, gauge_lat, gauge_lon)
+        if sim_df is None or len(sim_df) == 0:
+            print(f"  No model data for gauge {gauge_id}")
+            continue
+        
+        # Align time series
+        common_dates = obs_df.index.intersection(sim_df.index)
+        if len(common_dates) < 10:
+            print(f"  Insufficient common dates for gauge {gauge_id}")
+            continue
+        
+        obs_aligned = obs_df.loc[common_dates, 'discharge_m3s']
+        sim_aligned = sim_df.loc[common_dates, 'discharge_m3s']
+        
+        # Compute metrics
+        metrics = compute_fdc_metrics(obs_aligned, sim_aligned)
+        if metrics is None:
+            continue
+        
+        metrics['gauge_id'] = gauge_id
+        metrics['river_name'] = river_name
+        metrics['lat'] = gauge_lat
+        metrics['lon'] = gauge_lon
+        results.append(metrics)
+        
+        # Compute FDC percentiles
+        fdc = compute_fdc_percentiles(obs_aligned, sim_aligned)
+        if fdc is not None:
+            fdc_data[gauge_id] = fdc
+    
+    return pd.DataFrame(results), fdc_data
+
+def save_metrics_csv(metrics_df):
+    """Save metrics to CSV."""
+    try:
+        output_file = os.path.join(OUTPUT_DIR, "fdc_metrics_all_gauges.csv")
+        metrics_df.to_csv(output_file, index=False)
+        print(f"Saved metrics to {output_file}")
+    except Exception as e:
+        print(f"Error saving metrics CSV: {e}")
+
+def save_fdc_percentiles_csv(fdc_data):
+    """Save FDC percentiles to CSV."""
+    try:
+        output_file = os.path.join(OUTPUT_DIR, "fdc_percentiles_all_gauges.csv")
+        
+        rows = []
+        for gauge_id, fdc in fdc_data.items():
+            for i, pct in enumerate(fdc['percentiles']):
+                rows.append({
+                    'gauge_id': gauge_id,
+                    'percentile': pct,
+                    'obs_discharge_m3s': fdc['obs_percentiles'][i],
+                    'sim_discharge_m3s': fdc['sim_percentiles'][i]
+                })
+        
+        df = pd.DataFrame(rows)
+        df.to_csv(output_file, index=False)
+        print(f"Saved FDC percentiles to {output_file}")
+    except Exception as e:
+        print(f"Error saving FDC percentiles CSV: {e}")
+
+def create_comparison_figure(metrics_df, fdc_data):
+    """Create comparison figure with map and FDC panels."""
+    try:
+        # Filter to target gauges
+        target_ids = list(TARGET_GAUGES.values())
+        plot_data = metrics_df[metrics_df['gauge_id'].isin(target_ids)].copy()
+        
+        if len(plot_data) == 0:
+            print("No target gauges found in results")
+            return
+        
+        # Create figure with map and FDC panels
+        fig = plt.figure(figsize=(20, 14))
+        gs = GridSpec(3, 3, figure=fig, hspace=0.35, wspace=0.3)
+        
+        # Map panel (top left, spanning 2 rows and 2 columns)
+        ax_map = fig.add_subplot(gs[0:2, 0:2], projection=ccrs.PlateCarree())
+        ax_map.coastlines(resolution='50m', linewidth=0.5)
+        ax_map.add_feature(cfeature.BORDERS, linewidth=0.5)
+        ax_map.gridlines(draw_labels=True, alpha=0.3)
+        
+        # Plot all gauges as small dots
+        all_lats = metrics_df['lat'].values
+        all_lons = metrics_df['lon'].values
+        ax_map.scatter(all_lons, all_lats, s=20, c='lightgray', alpha=0.5, 
+                      transform=ccrs.PlateCarree(), label='All gauges')
+        
+        # Plot target gauges with color based on Wasserstein distance
+        target_lats = plot_data['lat'].values
+        target_lons = plot_data['lon'].values
+        wd_values = plot_data['wasserstein_distance_normalized'].values
+        
+        scatter = ax_map.scatter(target_lons, target_lats, s=200, c=wd_values,
+                                cmap='RdYlGn_r', alpha=0.8, edgecolors='black',
+                                linewidth=2, transform=ccrs.PlateCarree(),
+                                vmin=np.nanpercentile(wd_values, 5),
+                                vmax=np.nanpercentile(wd_values, 95))
+        
+        # Add gauge labels
+        for idx, row in plot_data.iterrows():
+            ax_map.text(row['lon'], row['lat'], str(row['gauge_id']),
+                       fontsize=8, ha='center', va='bottom',
+                       transform=ccrs.PlateCarree())
+        
+        ax_map.set_title('Gauge Locations and Wasserstein Distance', fontsize=12, fontweight='bold')
+        cbar = plt.colorbar(scatter, ax=ax_map, orientation='vertical', pad=0.05)
+        cbar.set_label('Normalized Wasserstein Distance', fontsize=10)
+        
+        # FDC comparison panels
+        fdc_axes = [
+            fig.add_subplot(gs[0, 2]),
+            fig.add_subplot(gs[1, 2]),
+            fig.add_subplot(gs[2, 0]),
+            fig.add_subplot(gs[2, 1]),
+            fig.add_subplot(gs[2, 2])
+        ]
+        
+        # Add one more if we have 6 gauges
+        if len(plot_data) > 5:
+            # Reuse the layout - we'll plot 6 gauges in a 2x3 grid on the right
+            fig2 = plt.figure(figsize=(18, 12))
+            gs2 = GridSpec(2, 3, figure=fig2, hspace=0.3, wspace=0.3)
+            fdc_axes = [fig2.add_subplot(gs2[i//3, i%3]) for i in range(6)]
+            
+            for idx, (ax, (_, row)) in enumerate(zip(fdc_axes, plot_data.iterrows())):
+                gauge_id = row['gauge_id']
+                river_name = row['river_name']
+                
+                if gauge_id not in fdc_data:
+                    continue
+                
+                fdc = fdc_data[gauge_id]
+                percentiles = fdc['percentiles']
+                obs_pct = fdc['obs_percentiles']
+                sim_pct = fdc['sim_percentiles']
+                
+                # Plot FDC
+                ax.semilogy(percentiles, obs_pct, 'b-', linewidth=2, label='Observed', marker='o', markersize=4)
+                ax.semilogy(percentiles, sim_pct, 'r--', linewidth=2, label='Simulated', marker='s', markersize=4)
+                
+                ax.set_xlabel('Exceedance Percentile (%)', fontsize=10)
+                ax.set_ylabel('Discharge (m³/s)', fontsize=10)
+                ax.set_title(f'{river_name} (ID: {gauge_id})', fontsize=11, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                ax.legend(fontsize=9)
+                
+                # Add metrics text
+                wd = row['wasserstein_distance_normalized']
+                vb = row['volume_bias']
+                metrics_text = f'WD: {wd:.3f}\nVB: {vb:.2%}'
+                ax.text(0.98, 0.05, metrics_text, transform=ax.transAxes,
+                       fontsize=9, verticalalignment='bottom', horizontalalignment='right',
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            output_file = os.path.join(OUTPUT_DIR, "fdc_comparison_6gauges.png")
+            fig2.savefig(output_file, dpi=150, bbox_inches='tight')
+            print(f"Saved FDC comparison figure to {output_file}")
+            plt.close(fig2)
+        else:
+            # Plot up to 5 gauges on the right side of the main figure
+            for idx, (ax, (_, row)) in enumerate(zip(fdc_axes[:len(plot_data)], plot_data.iterrows())):
+                gauge_id = row['gauge_id']
+                river_name = row['river_name']
+                
+                if gauge_id not in fdc_data:
+                    continue
+                
+                fdc = fdc_data[gauge_id]
+                percentiles = fdc['percentiles']
+                obs_pct = fdc['obs_percentiles']
+                sim_pct = fdc['sim_percentiles']
+                
+                # Plot FDC
+                ax.semilogy(percentiles, obs_pct, 'b-', linewidth=2, label='Observed', marker='o', markersize=4)
+                ax.semilogy(percentiles, sim_pct, 'r--', linewidth=2, label='Simulated', marker='s', markersize=4)
+                
+                ax.set_xlabel('Exceedance Percentile (%)', fontsize=9)
+                ax.set_ylabel('Discharge (m³/s)', fontsize=9)
+                ax.set_title(f'{river_name}', fontsize=10, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                if idx == 0:
+                    ax.legend(fontsize=8)
+                
+                # Add metrics text
+                wd = row['wasserstein_distance_normalized']
+                vb = row['volume_bias']
+                metrics_text = f'WD: {wd:.3f}\nVB: {vb:.2%}'
+                ax.text(0.98, 0.05, metrics_text, transform=ax.transAxes,
+                       fontsize=8, verticalalignment='bottom', horizontalalignment='right',
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        output_file = os.path.join(OUTPUT_DIR, "fdc_comparison_map.png")
+        fig.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Saved map and FDC comparison figure to {output_file}")
+        plt.close(fig)
+        
+    except Exception as e:
+        print(f"Error creating comparison figure: {e}")
+
+def create_wasserstein_map(metrics_df):
+    """Create map showing Wasserstein distance."""
+    try:
+        fig = plt.figure(figsize=(16, 10))
+        ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
+        
+        ax.coastlines(resolution='50m', linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+        ax.gridlines(draw_labels=True, alpha=0.3)
+        
+        # Plot all gauges
+        lats = metrics_df['lat'].values
+        lons = metrics_df['lon'].values
+        wd_values = metrics_df['wasserstein_distance_normalized'].values
+        
+        scatter = ax.scatter(lons, lats, s=150, c=wd_values, cmap='RdYlGn_r',
+                            alpha=0.8, edgecolors='black', linewidth=1.5,
+                            transform=ccrs.PlateCarree(),
+                            vmin=np.nanpercentile(wd_values, 5),
+                            vmax=np.nanpercentile(wd_values, 95))
+        
+        # Add gauge IDs
+        for idx, row in metrics_df.iterrows():
+            ax.text(row['lon'], row['lat'], str(row['gauge_id']),
+                   fontsize=7, ha='center', va='bottom',
+                   transform=ccrs.PlateCarree())
+        
+        ax.set_title('Normalized Wasserstein Distance (Flow Duration Curve)', 
+                    fontsize=14, fontweight='bold')
+        cbar = plt.colorbar(scatter, ax=ax, orientation='vertical', pad=0.05)
+        cbar.set_label('Normalized Wasserstein Distance', fontsize=11)
+        
+        output_file = os.path.join(OUTPUT_DIR, "wasserstein_distance_map.png")
+        fig.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Saved Wasserstein distance map to {output_file}")
+        plt.close(fig)
+        
+    except Exception as e:
+        print(f"Error creating Wasserstein map: {e}")
+
+def create_metrics_summary_figure(metrics_df):
+    """Create summary figure with metrics distributions."""
+    try:
+        fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+        
+        # Volume bias
+        ax = axes[0, 0]
+        ax.hist(metrics_df['volume_bias'].dropna(), bins=20, color='steelblue', alpha=0.7, edgecolor='black')
+        ax.axvline(0, color='red', linestyle='--', linewidth=2, label='Perfect')
+        ax.set_xlabel('Volume Bias', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('Volume Bias Distribution', fontsize=12, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Wasserstein distance
+        ax = axes[0, 1]
+        ax.hist(metrics_df['wasserstein_distance_normalized'].dropna(), bins=20, 
+               color='coral', alpha=0.7, edgecolor='black')
+        ax.set_xlabel('Normalized Wasserstein Distance', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('Wasserstein Distance Distribution', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Q50 ratio
+        ax = axes[0, 2]
+        ax.hist(metrics_df['q50_ratio'].dropna(), bins=20, color='lightgreen', alpha=0.7, edgecolor='black')
+        ax.axvline(1, color='red', linestyle='--', linewidth=2, label='Perfect')
+        ax.set_xlabel('Q50 Ratio (Sim/Obs)', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('Median Flow Ratio Distribution', fontsize=12, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Q10 ratio
+        ax = axes[1, 0]
+        ax.hist(metrics_df['q10_ratio'].dropna(), bins=20, color='lightyellow', alpha=0.7, edgecolor='black')
+        ax.axvline(1, color='red', linestyle='--', linewidth=2, label='Perfect')
+        ax.set_xlabel('Q10 Ratio (Sim/Obs)', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('Low Flow Ratio Distribution', fontsize=12, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Q90 ratio
+        ax = axes[1, 1]
+        ax.hist(metrics_df['q90_ratio'].dropna(), bins=20, color='lightcyan', alpha=0.7, edgecolor='black')
+        ax.axvline(1, color='red', linestyle='--', linewidth=2, label='Perfect')
+        ax.set_xlabel('Q90 Ratio (Sim/Obs)', fontsize=11)
+        ax.set_ylabel('Frequency', fontsize=11)
+        ax.set_title('High Flow Ratio Distribution', fontsize=12, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Scatter: Volume bias vs Wasserstein
+        ax = axes[1, 2]
+        ax.scatter(metrics_df['volume_bias'], metrics_df['wasserstein_distance_normalized'],
+                  s=100, alpha=0.6, edgecolors='black', linewidth=1)
+        ax.set_xlabel('Volume Bias', fontsize=11)
+        ax.set_ylabel('Normalized Wasserstein Distance', fontsize=11)
+        ax.set_title('Volume Bias vs Wasserstein Distance', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        fig.suptitle('Flow Duration Curve Metrics Summary', fontsize=14, fontweight='bold', y=0.995)
+        
+        output_file = os.path.join(OUTPUT_DIR, "metrics_summary.png")
+        fig.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Saved metrics summary figure to {output_file}")
+        plt.close(fig)
+        
+    except Exception as e:
+        print(f"Error creating metrics summary figure: {e}")
+
+def main():
+    """Main execution function."""
+    print("=" * 80)
+    print("E3SM River Discharge vs Observations - Flow Duration Curve Analysis")
+    print("=" * 80)
+    print(f"Period: {START_YEAR}-{END_YEAR}")
+    print(f"Output directory: {OUTPUT_DIR}")
+    print()
+    
+    # Create output directory
+    create_output_dir()
+    
+    # Load gauge metadata
+    print("Loading gauge metadata...")
+    metadata_df = load_gauge_metadata()
+    if metadata_df is None or len(metadata_df) == 0:
+        print("ERROR: No gauge metadata loaded")
+        return
+    
+    # Load MOSART data
+    print("Loading MOSART discharge data...")
+    mosart_ds = load_mosart_data(START_YEAR, END_YEAR)
+    if mosart_ds is None:
+        print("ERROR: No MOSART data loaded")
+        return
+    
+    # Print dataset info for debugging
+    print("MOSART dataset info:")
+    print(f"  Variables: {list(mosart_ds.data_vars)}")
+    print(f"  Dimensions: {dict(mosart_ds.dims)}")
+    if 'lat' in mosart_ds:
+        print(f"  lat shape: {mosart_ds['lat'].shape}")
+    if 'lon' in mosart_ds:
+        print(f"  lon shape: {mosart_ds['lon'].shape}")
+    print()
+    
+    # Process all gauges
+    print("Processing all gauges...")
+    metrics_df, fdc_data = process_all_gauges(metadata_df, mosart_ds)
+    
+    if len(metrics_df) == 0:
+        print("ERROR: No gauges processed successfully")
+        return
+    
+    print(f"Successfully processed {len(metrics_df)} gauges")
+    print()
+    
+    # Save results
+    print("Saving results...")
+    save_metrics_csv(metrics_df)
+    save_fdc_percentiles_csv(fdc_data)
+    
+    # Create visualizations
+    print("Creating visualizations...")
+    create_wasserstein_map(metrics_df)
+    create_comparison_figure(metrics_df, fdc_data)
+    create_metrics_summary_figure(metrics_df)
+    
+    # Print summary statistics
+    print()
+    print("=" * 80)
+    print("SUMMARY STATISTICS")
+    print("=" * 80)
+    print(f"Number of gauges processed: {len(metrics_df)}")
+    print()
+    print("Volume Bias Statistics:")
+    print(f"  Mean: {metrics_df['volume_bias'].mean():.4f}")
+    print(f"  Median: {metrics_df['volume_bias'].median():.4f}")
+    print(f"  Std Dev: {metrics_df['volume_bias'].std():.4f}")
+    print()
+    print("Normalized Wasserstein Distance Statistics:")
+    print(f"  Mean: {metrics_df['wasserstein_distance_normalized'].mean():.4f}")
+    print(f"  Median: {metrics_df['wasserstein_distance_normalized'].median():.4f}")
+    print(f"  Std Dev: {metrics_df['wasserstein_distance_normalized'].std():.4f}")
+    print()
+    print("Q50 Ratio (Sim/Obs) Statistics:")
+    print(f"  Mean: {metrics_df['q50_ratio'].mean():.4f}")
+    print(f"  Median: {metrics_df['q50_ratio'].median():.4f}")
+    print(f"  Std Dev: {metrics_df['q50_ratio'].std():.4f}")
+    print()
+    
+    # Print target gauge results
+    print("=" * 80)
+    print("TARGET GAUGE RESULTS")
+    print("=" * 80)
+    target_ids = list(TARGET_GAUGES.values())
+    target_results = metrics_df[metrics_df['gauge_id'].isin(target_ids)]
+    
+    for gauge_name, gauge_id in TARGET_GAUGES.items():
+        result = target_results[target_results['gauge_id'] == gauge_id]
+        if len(result) > 0:
+            row = result.iloc[0]
+            print(f"\n{gauge_name} (ID: {gauge_id}):")
+            print(f"  Location: ({row['lat']:.2f}°, {row['lon']:.2f}°)")
+            print(f"  Volume Bias: {row['volume_bias']:.4f}")
+            print(f"  Wasserstein Distance (normalized): {row['wasserstein_distance_normalized']:.4f}")
+            print(f"  Q10 Ratio: {row['q10_ratio']:.4f}")
+            print(f"  Q50 Ratio: {row['q50_ratio']:.4f}")
+            print(f"  Q90 Ratio: {row['q90_ratio']:.4f}")
+        else:
+            print(f"\n{gauge_name} (ID: {gauge_id}): NOT FOUND IN RESULTS")
+    
+    print()
+    print("=" * 80)
+    print("Analysis complete!")
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

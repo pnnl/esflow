@@ -10,11 +10,10 @@ import hashlib
 import glob
 import csv
 from collections import defaultdict
-from pathlib import Path
 import numpy as np
 import xarray as xr
 
-RESULTS_DIR = str(Path(__file__).resolve().parent / "results")
+RESULTS_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results"
 MODELS = ["claude-opus-4-6", "claude-haiku-4-5-20251001", "gpt-5", "gemini-2.5-flash", "o4-mini", "phi-4"]
 TASKS = [
     "task_01_obs_summary",
@@ -46,7 +45,9 @@ KEY_NC_PATTERNS = {
     "task_03_et_benchmark": ["bias"],            # catches et_bias_field, et_bias_model_minus_obs, bias_field, etc.
     "task_04_streamflow_fdc": [],
     "task_05_basin_streamflow": [],
-    "task_06_water_balance": ["residual"],       # catches field_residual, residual_field, residual_p_et_minus_q, etc.
+    "task_06_water_balance": ["water_balance_residual", "field_residual",
+                              "residual_field", "residual_p_et_minus_q",
+                              "residual_p_minus_et_minus_q", "residual"],
     "task_07_integrated_diagnostic": [],
 }
 

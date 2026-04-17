@@ -1,0 +1,140 @@
+name: "ELM Water Balance Closure 1985-1989"
+description: |
+  Extract ELM climatological time-mean fields for P (RAIN+SNOW), ET (QVEGE+QVEGT+QSOIL), and Q (QRUNOFF) over 1985-1989, compute global means, form the residual P−ET−Q, compute basin means for six major basins, and produce a composite figure with a global residual map and per-basin bars.
+settings:
+  case_name: "sample.v3.LR.historical"
+  data_dir: "./data/sample/e3sm"
+  output_dir: "./output/task06_water_balance"
+  style: cream_ink
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  basins_file: "./data/sample/obs/basin_polygons.geojson"
+  gauge_metadata: "./data/sample/obs/gauge_metadata.csv"
+  gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+steps:
+  - id: load_gauge_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.gauge_metadata}"
+    outputs:
+      metadata_file: "${settings.output_dir}/gauge_metadata_validated.csv"
+      n_gauges: "${settings.output_dir}/gauge_count.txt"
+  - id: extract_precip
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "RAIN+SNOW"
+      years: "${settings.years}"
+    outputs:
+      field_file: "${settings.output_dir}/elm_P_1985-1989.nc"
+  - id: extract_et
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "QVEGE+QVEGT+QSOIL"
+      years: "${settings.years}"
+    outputs:
+      field_file: "${settings.output_dir}/elm_ET_1985-1989.nc"
+  - id: extract_runoff
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "QRUNOFF"
+      years: "${settings.years}"
+    outputs:
+      field_file: "${settings.output_dir}/elm_Q_1985-1989.nc"
+  - id: global_mean_precip
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_precip.outputs.field_file}"
+      variable: ""
+      lat_bands: ""
+    outputs:
+      stats_file: "${settings.output_dir}/P_global_mean.csv"
+  - id: global_mean_et
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_et.outputs.field_file}"
+      variable: ""
+      lat_bands: ""
+    outputs:
+      stats_file: "${settings.output_dir}/ET_global_mean.csv"
+  - id: global_mean_runoff
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_runoff.outputs.field_file}"
+      variable: ""
+      lat_bands: ""
+    outputs:
+      stats_file: "${settings.output_dir}/Q_global_mean.csv"
+  - id: compute_p_minus_et
+    tool: compute_spatial_bias
+    params:
+      field_a: "${extract_precip.outputs.field_file}"
+      field_b: "${extract_et.outputs.field_file}"
+    outputs:
+      bias_file: "${settings.output_dir}/P_minus_ET_1985-1989.nc"
+      stats_file: "${settings.output_dir}/P_minus_ET_stats.csv"
+  - id: compute_residual
+    tool: compute_spatial_bias
+    params:
+      field_a: "${compute_p_minus_et.outputs.bias_file}"
+      field_b: "${extract_runoff.outputs.field_file}"
+    outputs:
+      bias_file: "${settings.output_dir}/water_balance_residual_1985-1989.nc"
+      stats_file: "${settings.output_dir}/water_balance_residual_stats.csv"
+  - id: basin_mean_precip
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_precip.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: "${settings.output_dir}/basin_mean_P.csv"
+  - id: basin_mean_et
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_et.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: "${settings.output_dir}/basin_mean_ET.csv"
+  - id: basin_mean_runoff
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_runoff.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: "${settings.output_dir}/basin_mean_Q.csv"
+  - id: basin_mean_residual
+    tool: extract_basin_mean
+    params:
+      field_file: "${compute_residual.outputs.bias_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: "${settings.output_dir}/basin_mean_residual.csv"
+  - id: plot_composite_water_balance
+    tool: plot_water_balance_basins
+    params:
+      residual_file: "${compute_residual.outputs.bias_file}"
+      basin_precip_file: "${basin_mean_precip.outputs.basin_means_file}"
+      basin_et_file: "${basin_mean_et.outputs.basin_means_file}"
+      basin_runoff_file: "${basin_mean_runoff.outputs.basin_means_file}"
+      basin_residual_file: "${basin_mean_residual.outputs.basin_means_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+      locations_file: "${load_gauge_metadata.outputs.metadata_file}"
+    outputs:
+      plot_file: "${settings.output_dir}/water_balance_composite.png"

@@ -1,0 +1,144 @@
+name: ELM Water Balance Closure 1985-1989
+description: 'Validate ELM water balance closure for 1985-1989. Extract time-mean
+  fields for precipitation (RAIN+SNOW), evapotranspiration (QVEGE+QVEGT+QSOIL), and
+  runoff (QRUNOFF); compute global means; form residual P-ET-Q; compute basin means
+  for six major basins; and generate a composite figure with global residual map and
+  per-basin bars.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_protocol/task_06_water_balance/run4_output
+  style: cream_ink
+steps:
+- id: extract_precip_field
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: RAIN+SNOW
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: elm_P_1985-1989.nc
+- id: extract_et_field
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QVEGE+QVEGT+QSOIL
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: elm_ET_1985-1989.nc
+- id: extract_runoff_field
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QRUNOFF
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: elm_Q_1985-1989.nc
+- id: global_mean_precip
+  tool: compute_zonal_stats
+  params:
+    field_file: ${extract_precip_field.outputs.field_file}
+    variable: ''
+    lat_bands: ''
+  outputs:
+    stats_file: P_global_mean.csv
+- id: global_mean_et
+  tool: compute_zonal_stats
+  params:
+    field_file: ${extract_et_field.outputs.field_file}
+    variable: ''
+    lat_bands: ''
+  outputs:
+    stats_file: ET_global_mean.csv
+- id: global_mean_runoff
+  tool: compute_zonal_stats
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    variable: ''
+    lat_bands: ''
+  outputs:
+    stats_file: Q_global_mean.csv
+- id: compute_p_minus_et
+  tool: compute_spatial_bias
+  params:
+    field_a: ${extract_precip_field.outputs.field_file}
+    field_b: ${extract_et_field.outputs.field_file}
+  outputs:
+    bias_file: P_minus_ET_1985-1989.nc
+    stats_file: P_minus_ET_stats.csv
+- id: compute_residual
+  tool: compute_spatial_bias
+  params:
+    field_a: ${compute_p_minus_et.outputs.bias_file}
+    field_b: ${extract_runoff_field.outputs.field_file}
+  outputs:
+    bias_file: residual_P-ET-Q_1985-1989.nc
+    stats_file: residual_stats.csv
+- id: basin_mean_precip
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_precip_field.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: basin_mean_P.csv
+- id: basin_mean_et
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_et_field.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: basin_mean_ET.csv
+- id: basin_mean_runoff
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: basin_mean_Q.csv
+- id: basin_mean_residual
+  tool: extract_basin_mean
+  params:
+    field_file: ${compute_residual.outputs.bias_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: basin_mean_residual.csv
+- id: plot_water_balance
+  tool: plot_water_balance_basins
+  params:
+    residual_file: ${compute_residual.outputs.bias_file}
+    basin_precip_file: ${basin_mean_precip.outputs.basin_means_file}
+    basin_et_file: ${basin_mean_et.outputs.basin_means_file}
+    basin_runoff_file: ${basin_mean_runoff.outputs.basin_means_file}
+    basin_residual_file: ${basin_mean_residual.outputs.basin_means_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+    locations_file: ./data/sample/obs/gauge_metadata.csv
+  outputs:
+    plot_file: water_balance_composite.png

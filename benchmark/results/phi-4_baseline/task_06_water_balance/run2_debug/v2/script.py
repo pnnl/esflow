@@ -1,0 +1,150 @@
+import os
+import xarray as xr
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from shapely.geometry import shape, Point
+import geopandas as gpd
+
+# Define constants and paths
+data_dir = "./data/sample/e3sm/"
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_06_water_balance/run2_debug/v2/output"
+basin_polygons_path = os.path.join(data_dir, "obs", "basin_polygons.geojson")
+gauge_metadata_path = os.path.join(data_dir, "obs", "gauge_metadata.csv")
+
+# Create output directory if it doesn't exist
+os.makedirs(output_dir, exist_ok=True)
+
+# Define the case name and time period
+case_name = "sample.v3.LR.historical"
+start_year = 1985
+end_year = 1989
+
+# Load basin polygons with error handling for file existence
+try:
+    basins_gdf = gpd.read_file(basin_polygons_path)
+except FileNotFoundError:
+    print(f"Basin polygon file not found at {basin_polygons_path}. Please check the path.")
+    raise
+except Exception as e:
+    print(f"Error loading basin polygons: {e}")
+    raise
+
+# Define the major basins of interest
+major_basins = [3629000, 4121801, 4115200, 6742900, 2969100, 1159100]
+
+# Load ELM data and compute climatological means
+try:
+    files = sorted([os.path.join(data_dir, "lnd", f"{case_name}.elm.h0.{year:04d}-{month:02d}.nc")
+                    for year in range(start_year, end_year + 1)
+                    for month in range(1, 13)])
+    
+    ds_list = [xr.open_dataset(file) for file in files]
+    ds_combined = xr.concat(ds_list, dim='time')
+    
+    # Compute climatological means
+    climatology = ds_combined.groupby('time.month').mean(dim='time')
+    
+    # Extract variables and compute area-weighted global mean
+    rain = climatology['RAIN'] + climatology['SNOW']
+    et = climatology['QVEGE'] + climatology['QVEGT'] + climatology['QSOIL']
+    runoff = climatology['QRUNOFF']
+    
+    # Compute water balance residual
+    residual = rain - et - runoff
+    
+    # Area-weighted global mean
+    area_weights = np.cos(np.deg2rad(rain.lat))
+    global_mean_rain = (rain * area_weights).mean(dim=('lat', 'lon'))
+    global_mean_et = (et * area_weights).mean(dim=('lat', 'lon'))
+    global_mean_runoff = (runoff * area_weights).mean(dim=('lat', 'lon'))
+    global_mean_residual = residual.mean(dim=('lat', 'lon'))
+    
+except Exception as e:
+    print(f"Error processing ELM data: {e}")
+    raise
+
+# Clip fields to major basins
+def clip_to_basin(data_array, basin_id):
+    basin_geom = basins_gdf[basins_gdf['grdc_no'] == basin_id].geometry.values[0]
+    basin_mask = xr.apply_ufunc(
+        lambda x: shape(x).within(basin_geom),
+        data_array.lat,
+        vectorize=True
+    )
+    return data_array.where(basin_mask, drop=True)
+
+# Prepare data for plotting
+basin_data = {}
+for basin_id in major_basins:
+    try:
+        basin_rain = clip_to_basin(rain, basin_id)
+        basin_et = clip_to_basin(et, basin_id)
+        basin_runoff = clip_to_basin(runoff, basin_id)
+        basin_residual = clip_to_basin(residual, basin_id)
+        
+        # Compute area-weighted mean for each basin
+        basin_area_weights = np.cos(np.deg2rad(basin_rain.lat))
+        basin_mean_rain = (basin_rain * basin_area_weights).mean(dim=('lat', 'lon'))
+        basin_mean_et = (basin_et * basin_area_weights).mean(dim=('lat', 'lon'))
+        basin_mean_runoff = (basin_runoff * basin_area_weights).mean(dim=('lat', 'lon'))
+        basin_mean_residual = basin_residual.mean(dim=('lat', 'lon'))
+        
+        basin_data[basin_id] = {
+            "rain": basin_mean_rain,
+            "et": basin_mean_et,
+            "runoff": basin_mean_runoff,
+            "residual": basin_mean_residual
+        }
+    except Exception as e:
+        print(f"Error processing data for basin {basin_id}: {e}")
+        continue
+
+# Plotting
+fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 10), subplot_kw={'projection': ccrs.PlateCarree()})
+basin_names = {
+    3629000: "Amazon",
+    4121801: "Missouri",
+    4115200: "Columbia",
+    6742900: "Danube",
+    2969100: "Mekong",
+    1159100: "Orange"
+}
+
+# Plot global residual map
+ax = fig.add_subplot(2, 3, 4, projection=ccrs.PlateCarree())
+residual.plot(ax=ax, cmap='coolwarm', cbar_kwargs={'label': 'Residual (mm/s)'})
+basins_gdf.boundary.plot(ax=ax, color='black')
+ax.set_title('Global Water Balance Residual')
+
+# Plot per-basin bar charts
+for i, basin_id in enumerate(major_basins):
+    ax = axes.flatten()[i]
+    data = basin_data.get(basin_id)
+    if data:
+        values = [data["rain"].values[0], data["et"].values[0], data["runoff"].values[0], data["residual"].values[0]]
+        labels = ['Rain', 'ET', 'Runoff', 'Residual']
+        ax.bar(labels, values)
+        ax.set_title(basin_names[basin_id])
+    else:
+        axes.flatten()[i].set_visible(False)
+
+plt.tight_layout()
+plt.savefig(os.path.join(output_dir, "water_balance_composite.png"))
+
+# Save basin data to CSV
+for basin_id in major_basins:
+    if basin_id in basin_data:
+        df = pd.DataFrame({
+            'Component': ['Rain', 'ET', 'Runoff', 'Residual'],
+            'Value (mm/s)': [
+                basin_data[basin_id]['rain'].values[0],
+                basin_data[basin_id]['et'].values[0],
+                basin_data[basin_id]['runoff'].values[0],
+                basin_data[basin_id]['residual'].values[0]
+            ]
+        })
+        df.to_csv(os.path.join(output_dir, f"basin_{basin_id}_water_balance.csv"), index=False)
+
+print("Analysis complete. Outputs saved to:", output_dir)

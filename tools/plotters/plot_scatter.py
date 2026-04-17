@@ -15,7 +15,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, get_colors, COLOR_PALETTES
 
 SPEC = ToolSpec(
@@ -34,7 +34,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     x_file = config['x_file']
     y_file = config['y_file']

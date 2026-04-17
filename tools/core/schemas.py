@@ -1,5 +1,5 @@
 """
-Standard intermediate data schemas for ESFlow tools (documentation reference).
+Standard intermediate data schemas for ESMFlow tools (documentation reference).
 
 These schemas describe the CSV contracts between tools. They are not serialized
 to the catalog — the catalog uses ToolSpec.outputs directly. This file exists

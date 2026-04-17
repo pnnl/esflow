@@ -1,13 +1,13 @@
-# ESFlow User Guide
+# ESMFlow User Guide
 
-This guide explains how to use ESFlow's protocol-first workflow — from adding your own tools to generating and running YAML workflows with any LLM.
+This guide explains how to use ESMFlow's module-grounded workflow — from adding your own tools to generating and running YAML workflows with any LLM.
 
 ## The Protocol
 
-ESFlow separates *what tools can do* (defined by scientists) from *how to compose them* (delegated to an LLM). The protocol works in four stages:
+ESMFlow separates *what tools can do* (defined by scientists) from *how to compose them* (delegated to an LLM). The protocol works in four stages:
 
 ```
-1. Register tool    →  @esflow_tool(ToolSpec(...))
+1. Register tool    →  @esmflow_tool(ToolSpec(...))
 2. Generate catalog →  python tools/generate_catalog.py --overwrite
 3. Prompt any LLM   →  system_prompt.txt + tool_catalog.yaml + your task description
 4. Validate & run   →  python run_workflow.py workflow.yaml --dry-run && python run_workflow.py workflow.yaml
@@ -17,13 +17,13 @@ The key artifact is `tools/tool_catalog.yaml` — a machine-readable description
 
 ## 1. Adding a Tool
 
-Each tool is a Python function in `tools/<category>/` decorated with `@esflow_tool`. The decorator handles parameter validation, type coercion, unknown-param rejection, and output directory creation.
+Each tool is a Python function in `tools/<category>/` decorated with `@esmflow_tool`. The decorator handles parameter validation, type coercion, unknown-param rejection, and output directory creation.
 
 ### Step 1: Create the tool file
 
 ```python
 # tools/analyzers/compute_my_metric.py
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 SPEC = ToolSpec(
     name='compute_my_metric',
@@ -42,7 +42,7 @@ SPEC = ToolSpec(
     },
 )
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     import pandas as pd
 
@@ -87,7 +87,7 @@ grep 'compute_my_metric' tools/tool_catalog.yaml
 - **Describe outputs precisely.** The LLM wires tools together based on output descriptions and types. Include column names for CSV outputs (e.g., "CSV with gauge_id, nse, kge columns").
 - **Use standardized schemas.** Match existing conventions — `time` index for time series, `gauge_id` for station data, `month` (1-12) for climatology.
 - **No side effects.** Tools receive a `config` dict, write files to `output_dir`, and return a result dict. That's it.
-- **Strict validation.** The `@esflow_tool` decorator rejects unknown parameters automatically. Don't disable this.
+- **Strict validation.** The `@esmflow_tool` decorator rejects unknown parameters automatically. Don't disable this.
 
 ### Tool categories
 

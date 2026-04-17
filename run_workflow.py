@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESFlow Workflow Engine
+ESMFlow v3 Workflow Engine
 
 Execute workflow YAML files by running tools in sequence,
 passing outputs between steps via ${reference} resolution.
@@ -608,7 +608,7 @@ def run_workflow(workflow_path: str, dry_run: bool = False, verbose: bool = Fals
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Execute ESFlow workflows',
+        description='Execute ESMFlow workflows',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

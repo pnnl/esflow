@@ -1,5 +1,5 @@
 version: '3.0'
-description: ESFlow Analysis Tools
+description: ESMFlow v3 Analysis Tools
 tools:
 - name: fetch_ilamb_data
   description: 'Fetch an observation dataset from the ILAMB data server (https://www.ilamb.org/ILAMB-Data/).

@@ -17,7 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
 
 SPEC = ToolSpec(
@@ -79,7 +79,7 @@ def _radar_panel(ax, values, labels, title, color, bg_color):
     ax.set_title(title, fontsize=11, fontweight='bold', pad=20)
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     budget_file = config['budget_file']
     output_dir = Path(config['output_dir'])

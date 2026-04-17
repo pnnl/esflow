@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a data-flow diagram from an ESFlow workflow YAML.
+Generate a data-flow diagram from an ESMFlow workflow YAML.
 
 Parses the workflow, extracts tool steps, output files, and inter-step
 references, then renders a DAG as PNG.
@@ -508,7 +508,7 @@ def visualize_workflow(workflow_path, output_path=None, show_settings=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate a data-flow diagram from an ESFlow workflow YAML',
+        description='Generate a data-flow diagram from an ESMFlow workflow YAML',
     )
     parser.add_argument('workflow', help='Path to workflow YAML file')
     parser.add_argument('-o', '--output',

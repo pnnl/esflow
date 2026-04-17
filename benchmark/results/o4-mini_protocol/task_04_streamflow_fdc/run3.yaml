@@ -1,0 +1,83 @@
+name: Streamflow FDC Comparison (1985-1989)
+description: "Compare statistical distributions of E3SM MOSART simulated RIVER_DISCHARGE_OVER_LAND_LIQ\
+  \ \nagainst observations for daily discharge over the period 1985-1989.\nThe workflow\
+  \ matches all GRDC gauges to the model grid, extracts simulated and observed\ntimeseries,\
+  \ computes flow duration curve metrics (volume bias, Wasserstein distance,\nQ10/Q50/Q90),\
+  \ and generates a map of the Wasserstein distance with FDC comparison\npanels for\
+  \ six major basins.\n"
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm
+  obs_metadata: ./data/sample/obs/gauge_metadata.csv
+  obs_streamflow_dir: ./data/sample/obs/streamflow
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_protocol/task_04_streamflow_fdc/run3_output
+  style: cream_ink
+steps:
+- id: load_obs_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.obs_metadata}
+  outputs:
+    metadata_file: ${settings.output_dir}/gauge_metadata_valid.csv
+    n_gauges: ${settings.output_dir}/n_gauges.txt
+- id: match_gauges
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_obs_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+  outputs:
+    matched_file: ${settings.output_dir}/matched_gauges.csv
+    n_matched: ${settings.output_dir}/n_matched.txt
+- id: extract_sim_timeseries
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+    variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+    locations_file: ${match_gauges.outputs.matched_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    frequency: daily
+  outputs:
+    timeseries_file: ${settings.output_dir}/sim_discharge_daily_1985-1989.csv
+    n_locations: ${settings.output_dir}/n_locations.txt
+- id: extract_obs_timeseries
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.obs_streamflow_dir}
+    gauge_metadata: ${load_obs_metadata.outputs.metadata_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    gauge_ids: ''
+  outputs:
+    timeseries_file: ${settings.output_dir}/obs_discharge_daily_1985-1989.csv
+    n_gauges: ${settings.output_dir}/n_obs_gauges.txt
+- id: compute_fdc_metrics
+  tool: compute_fdc_metrics
+  params:
+    sim_file: ${extract_sim_timeseries.outputs.timeseries_file}
+    obs_file: ${extract_obs_timeseries.outputs.timeseries_file}
+  outputs:
+    metrics_file: ${settings.output_dir}/fdc_metrics.csv
+    fdc_file: ${settings.output_dir}/fdc_percentiles.csv
+- id: plot_fdc
+  tool: plot_fdc
+  params:
+    metrics_file: ${compute_fdc_metrics.outputs.metrics_file}
+    fdc_file: ${compute_fdc_metrics.outputs.fdc_file}
+    locations_file: ${load_obs_metadata.outputs.metadata_file}
+    metric: wasserstein
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    plot_file: ${settings.output_dir}/fdc_comparison_map.png

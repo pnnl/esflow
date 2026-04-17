@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESFlow Benchmark Runner
+ESMFlow Benchmark Runner
 
 Sends task prompts to multiple LLMs via OpenAI-compatible API,
 saves returned YAML workflows, and auto-scores them.
@@ -59,6 +59,12 @@ Usage:
   # Compare protocol vs baseline for one task:
   python benchmark/run_benchmark.py --mode protocol --task benchmark/protocol/task_03_et_benchmark.txt
   python benchmark/run_benchmark.py --mode baseline --task benchmark/protocol/task_03_et_benchmark.txt
+
+  # Baseline with self-debugging (up to 3 retry rounds on crashes):
+  python benchmark/run_benchmark.py --baseline --self-debug 3
+
+  # Single task with self-debugging:
+  python benchmark/run_benchmark.py --mode baseline --self-debug 3 --task benchmark/baselines/task_03_et_benchmark.txt
 """
 
 import argparse
@@ -238,10 +244,18 @@ def build_system_prompt(mode="protocol"):
 def get_task_prompt(task_file, mode="protocol"):
     """Return the task prompt text for the given mode.
 
-    Both protocol and baseline use the same full task description.
+    Protocol and baseline read from their respective directories
+    (benchmark/protocol and benchmark/baselines), which currently
+    contain identical task files but can diverge if needed.
     """
     task_file = Path(task_file)
     return task_file.read_text().strip()
+
+
+def default_tasks_dir(mode):
+    """Return the default task directory for a given mode."""
+    bench_dir = Path(__file__).resolve().parent
+    return bench_dir / ("baselines" if mode == "baseline" else "protocol")
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +282,15 @@ def get_api_key_for_model(model):
 
 def call_llm(model, task_prompt, system_prompt, base_url, api_key):
     """Send prompt to LLM and return raw response text + metadata."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task_prompt},
+    ]
+    return call_llm_messages(model, messages, base_url, api_key)
+
+
+def call_llm_messages(model, messages, base_url, api_key):
+    """Send a full message list to LLM and return raw response text + metadata."""
     import openai
 
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
@@ -282,10 +305,7 @@ def call_llm(model, task_prompt, system_prompt, base_url, api_key):
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task_prompt},
-            ],
+            messages=messages,
             temperature=temp,
         )
         elapsed = time.time() - t0
@@ -303,6 +323,19 @@ def call_llm(model, task_prompt, system_prompt, base_url, api_key):
 
 def call_gemini(model, task_prompt, system_prompt):
     """Send prompt to Google Gemini via google-genai SDK."""
+    messages = [task_prompt]
+    return call_gemini_messages(model, messages, system_prompt)
+
+
+def call_gemini_messages(model, contents, system_prompt):
+    """Send a full content list to Gemini and return raw response text + metadata.
+
+    contents: list of dicts with 'role' and 'parts', or plain strings.
+              For multi-turn, use:
+                [{"role": "user", "parts": [{"text": "..."}]},
+                 {"role": "model", "parts": [{"text": "..."}]},
+                 {"role": "user", "parts": [{"text": "..."}]}]
+    """
     from google import genai
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -315,7 +348,7 @@ def call_gemini(model, task_prompt, system_prompt):
     try:
         response = client.models.generate_content(
             model=model,
-            contents=task_prompt,
+            contents=contents,
             config=genai.types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.0,
@@ -423,21 +456,172 @@ def score_python_s1(script_path):
         return False, "Import check timed out"
 
 
-def score_python_s2(script_path, timeout=120):
-    """S2 for code-gen: Does the script execute without error?"""
+def score_python_s2(script_path, timeout=120, python_exe=None):
+    """S2 for code-gen: Does the script execute without error?
+
+    Returns (passed, short_msg, combined, stdout, stderr).
+    combined merges stdout+stderr (some scripts swallow exceptions and print
+    error messages to stdout instead of crashing). stdout and stderr are
+    also returned separately for logging purposes.
+    """
+    exe = python_exe or sys.executable
     try:
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            [exe, str(script_path)],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(REPO_ROOT),
         )
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
+        combined = ""
+        if stderr_text.strip():
+            combined += stderr_text.strip() + "\n"
+        if stdout_text.strip():
+            combined += stdout_text.strip()
+        combined = combined.strip()
+
         if result.returncode == 0:
-            return True, "Execution succeeded"
+            # Even with exit 0, treat as failure if output contains error-like
+            # messages (e.g., scripts that catch exceptions and print to stdout).
+            import re
+            error_pattern = re.compile(
+                r"\b(traceback|error|exception|failed|fatal)\b",
+                re.IGNORECASE,
+            )
+            if error_pattern.search(combined):
+                # Grab the first line that matched, for a useful short message
+                short_err = "unknown"
+                for line in combined.splitlines():
+                    if error_pattern.search(line):
+                        short_err = line.strip()
+                        break
+                return False, f"Soft error: {short_err}", combined, stdout_text, stderr_text
+            return True, "Execution succeeded", combined, stdout_text, stderr_text
         else:
-            err = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown"
-            return False, f"Runtime error: {err}"
+            short_err = combined.splitlines()[-1] if combined else "unknown"
+            return False, f"Runtime error: {short_err}", combined, stdout_text, stderr_text
     except subprocess.TimeoutExpired:
-        return False, f"Execution timed out ({timeout}s)"
+        msg = f"TimeoutError: script exceeded {timeout}s"
+        return False, f"Execution timed out ({timeout}s)", msg, "", msg
+
+
+# ---------------------------------------------------------------------------
+# Self-debug loop for code-gen baseline
+# ---------------------------------------------------------------------------
+
+DEBUG_FEEDBACK_PROMPT = """\
+Your script crashed with the following error:
+
+```
+{traceback}
+```
+
+Fix the script and return the complete corrected Python script. \
+Output ONLY the Python script, no explanation."""
+
+
+def self_debug_loop(model, system_prompt, task_prompt, first_script,
+                    out_dir, run_label, max_rounds, exec_timeout,
+                    base_url, api_key):
+    """Execute a baseline script and iteratively debug crashes.
+
+    Args:
+        model: model name for API routing
+        system_prompt: the baseline system prompt
+        task_prompt: the original task prompt (with output dir appended)
+        first_script: the cleaned script text from the initial generation
+        out_dir: directory for saving versioned scripts
+        run_label: e.g. "run1"
+        max_rounds: maximum debug iterations (0 = no debugging)
+        exec_timeout: seconds before killing execution
+        base_url: API endpoint
+        api_key: API key
+
+    Returns:
+        (final_script_path, s2_passed, s2_msg, debug_rounds_used, all_versions)
+        all_versions: list of dicts with keys {version, script_path, passed, error}
+    """
+    current_script = first_script
+    all_versions = []
+
+    # Build the conversation history — accumulates across rounds
+    # OpenAI-style messages (also used to build Gemini contents)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task_prompt},
+        {"role": "assistant", "content": first_script},
+    ]
+
+    for round_idx in range(max_rounds + 1):  # round 0 = initial execution
+        version = f"v{round_idx + 1}"
+        script_path = out_dir / f"{run_label}_{version}.py"
+        script_path.write_text(current_script)
+
+        # Execute
+        s2_pass, s2_msg, full_stderr, _, _ = score_python_s2(script_path, timeout=exec_timeout)
+        all_versions.append({
+            "version": version,
+            "script_path": str(script_path),
+            "passed": s2_pass,
+            "error": s2_msg if not s2_pass else None,
+        })
+
+        print(f"    [{version}] S2: {'pass' if s2_pass else 'FAIL'} — {s2_msg}")
+
+        if s2_pass or round_idx == max_rounds:
+            # Either succeeded or exhausted retries
+            return script_path, s2_pass, s2_msg, round_idx, all_versions
+
+        # --- Build debug feedback and call LLM again ---
+        # Truncate very long tracebacks to last 80 lines to save tokens
+        tb_lines = full_stderr.splitlines()
+        if len(tb_lines) > 80:
+            truncated_tb = "\n".join(["[...truncated...]"] + tb_lines[-80:])
+        else:
+            truncated_tb = full_stderr
+
+        feedback = DEBUG_FEEDBACK_PROMPT.format(traceback=truncated_tb)
+        messages.append({"role": "user", "content": feedback})
+
+        print(f"    [{version}] Sending error feedback to {model} (round {round_idx + 1}/{max_rounds})...")
+
+        # Call model with full conversation history
+        if is_gemini_model(model):
+            # Convert OpenAI messages to Gemini contents format
+            gemini_contents = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    continue  # system_instruction is separate in Gemini
+                gemini_role = "model" if msg["role"] == "assistant" else "user"
+                gemini_contents.append({
+                    "role": gemini_role,
+                    "parts": [{"text": msg["content"]}],
+                })
+            raw_text, elapsed, usage, error = call_gemini_messages(
+                model, gemini_contents, system_prompt
+            )
+        elif is_local_model(model):
+            raw_text, elapsed, usage, error = call_llm_messages(
+                model, messages, LOCAL_BASE_URL, LOCAL_API_KEY
+            )
+        else:
+            model_api_key = get_api_key_for_model(model) or api_key
+            raw_text, elapsed, usage, error = call_llm_messages(
+                model, messages, base_url, model_api_key
+            )
+
+        if error:
+            print(f"    [{version}] API error during debug: {error}")
+            return script_path, False, f"Debug API error: {error}", round_idx, all_versions
+
+        tokens = usage.get("total_tokens") if usage else None
+        print(f"    [{version}] Debug response: {elapsed:.1f}s, {tokens or '?'} tokens")
+
+        current_script = strip_markdown_fences(raw_text)
+        messages.append({"role": "assistant", "content": current_script})
+
+    # Should not reach here, but just in case
+    return script_path, False, "Max debug rounds exceeded", max_rounds, all_versions
 
 
 def _rewrite_output_dir(yaml_text, new_output_dir):
@@ -457,10 +641,11 @@ def _rewrite_output_dir(yaml_text, new_output_dir):
 # ---------------------------------------------------------------------------
 
 def run_benchmark(models, task_files, base_url, api_key, n_runs=1,
-                   is_local=False, mode="protocol"):
+                   is_local=False, mode="protocol", self_debug_rounds=0):
     """Run benchmark across models and tasks. Return results list.
 
     mode: "protocol" (YAML workflow) or "baseline" (Python code-gen)
+    self_debug_rounds: max iterative debug attempts for baseline crashes (0 = off)
     """
     system_prompt = build_system_prompt(mode)
     is_codegen = mode == "baseline"
@@ -566,6 +751,35 @@ def run_benchmark(models, task_files, base_url, api_key, n_runs=1,
                         s1_icon = "pass" if s1_pass else "FAIL"
                         print(f"  S1 (imports):       {s1_icon} — {s1_msg}")
 
+                    # S2: execution + optional self-debug loop
+                    s2_pass, s2_msg, debug_rounds = False, "Skipped", 0
+                    debug_versions = []
+                    if s0_pass and self_debug_rounds >= 0:
+                        if self_debug_rounds == 0:
+                            # Single-shot execution, no retries
+                            s2_pass, s2_msg, _, _, _ = score_python_s2(script_path)
+                            s2_icon = "pass" if s2_pass else "FAIL"
+                            print(f"  S2 (execution):     {s2_icon} — {s2_msg}")
+                        else:
+                            # Self-debug: execute and iteratively fix crashes
+                            print(f"  S2 (execution + self-debug, max {self_debug_rounds} rounds):")
+                            final_path, s2_pass, s2_msg, debug_rounds, debug_versions = \
+                                self_debug_loop(
+                                    model=model,
+                                    system_prompt=system_prompt,
+                                    task_prompt=actual_task_prompt,
+                                    first_script=cleaned,
+                                    out_dir=out_dir,
+                                    run_label=run_label,
+                                    max_rounds=self_debug_rounds,
+                                    exec_timeout=120,
+                                    base_url=base_url,
+                                    api_key=api_key,
+                                )
+                            script_path = final_path
+                            status = "pass" if s2_pass else "FAIL"
+                            print(f"  S2 final: {status} after {debug_rounds} debug round(s) — {s2_msg}")
+
                     output_file = str(script_path)
 
                 else:
@@ -590,7 +804,7 @@ def run_benchmark(models, task_files, base_url, api_key, n_runs=1,
 
                     output_file = str(yaml_path)
 
-                results.append({
+                result_entry = {
                     "task": task_name,
                     "model": model_short,
                     "tier": tier,
@@ -603,31 +817,54 @@ def run_benchmark(models, task_files, base_url, api_key, n_runs=1,
                     "elapsed": round(elapsed, 1),
                     "tokens": tokens,
                     "output_file": output_file,
-                })
+                }
+                # Add S2 and debug info for codegen runs
+                if is_codegen:
+                    result_entry["s2"] = s2_pass
+                    result_entry["s2_msg"] = s2_msg
+                    if self_debug_rounds > 0:
+                        result_entry["debug_rounds"] = debug_rounds
+                        result_entry["debug_versions"] = debug_versions
+                results.append(result_entry)
 
     return results
 
 
 def print_results_table(results):
     """Print a summary table."""
-    print(f"\n{'='*90}")
+    has_s2 = any("s2" in r for r in results)
+
+    print(f"\n{'='*100}")
     print("BENCHMARK RESULTS")
-    print(f"{'='*90}")
-    print(f"{'Model':<35} {'Mode':<10} {'Tier':<10} {'S0':<6} {'S1':<6} {'Time':<8} {'Tokens':<8}")
-    print(f"{'-'*35} {'-'*10} {'-'*10} {'-'*6} {'-'*6} {'-'*8} {'-'*8}")
+    print(f"{'='*100}")
+    if has_s2:
+        print(f"{'Model':<35} {'Mode':<10} {'Tier':<10} {'S0':<6} {'S1':<6} {'S2':<6} {'Dbg':<5} {'Time':<8} {'Tokens':<8}")
+        print(f"{'-'*35} {'-'*10} {'-'*10} {'-'*6} {'-'*6} {'-'*6} {'-'*5} {'-'*8} {'-'*8}")
+    else:
+        print(f"{'Model':<35} {'Mode':<10} {'Tier':<10} {'S0':<6} {'S1':<6} {'Time':<8} {'Tokens':<8}")
+        print(f"{'-'*35} {'-'*10} {'-'*10} {'-'*6} {'-'*6} {'-'*8} {'-'*8}")
 
     for r in results:
         s0 = "pass" if r["s0"] else "FAIL"
         s1 = "pass" if r["s1"] else "FAIL"
         tokens = str(r["tokens"]) if r["tokens"] else "?"
         mode = r.get("mode", "protocol")
-        print(f"{r['model']:<35} {mode:<10} {r['tier']:<10} {s0:<6} {s1:<6} {r['elapsed']:<8} {tokens:<8}")
+        if has_s2:
+            s2 = "pass" if r.get("s2") else ("FAIL" if "s2" in r else "—")
+            dbg = str(r.get("debug_rounds", "—"))
+            print(f"{r['model']:<35} {mode:<10} {r['tier']:<10} {s0:<6} {s1:<6} {s2:<6} {dbg:<5} {r['elapsed']:<8} {tokens:<8}")
+        else:
+            print(f"{r['model']:<35} {mode:<10} {r['tier']:<10} {s0:<6} {s1:<6} {r['elapsed']:<8} {tokens:<8}")
 
     # Summary
     total = len(results)
     s0_pass = sum(1 for r in results if r["s0"])
     s1_pass = sum(1 for r in results if r["s1"])
-    print(f"\nTotal: {total} | S0 pass: {s0_pass}/{total} | S1 pass: {s1_pass}/{total}")
+    summary = f"\nTotal: {total} | S0 pass: {s0_pass}/{total} | S1 pass: {s1_pass}/{total}"
+    if has_s2:
+        s2_pass = sum(1 for r in results if r.get("s2"))
+        summary += f" | S2 pass: {s2_pass}/{total}"
+    print(summary)
 
 
 def save_results(results):
@@ -646,10 +883,11 @@ def save_results(results):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="ESFlow Benchmark Runner")
+    parser = argparse.ArgumentParser(description="ESMFlow Benchmark Runner")
     parser.add_argument("--task", type=str, help="Single task file to run")
-    parser.add_argument("--tasks-dir", type=str, default=str(Path(__file__).parent / "protocol"),
-                        help="Directory of task files")
+    parser.add_argument("--tasks-dir", type=str, default=None,
+                        help="Directory of task files (default: benchmark/protocol for "
+                             "--mode protocol, benchmark/baselines for --mode baseline)")
     parser.add_argument("--all", action="store_true", help="Run all Depot models")
     parser.add_argument("--local", action="store_true",
                         help="Run local LM Studio models (no API key needed)")
@@ -664,6 +902,10 @@ def main():
     parser.add_argument("--mode", type=str, default="protocol", choices=PROMPT_MODES,
                         help="Prompt mode: protocol (YAML+catalog), baseline (Python code-gen). "
                              "Default: protocol")
+    parser.add_argument("--self-debug", type=int, default=0, metavar="N",
+                        help="Max self-debug rounds for baseline crashes. The model receives "
+                             "the traceback and iteratively fixes the script up to N times. "
+                             "Only applies to --mode baseline. Default: 0 (single-shot)")
 
     # Paper benchmark shortcuts — all 6 models, 4 runs
     paper_group = parser.add_mutually_exclusive_group()
@@ -714,12 +956,13 @@ def main():
         if args.task:
             task_files = [args.task]
         else:
-            tasks_dir = Path(args.tasks_dir)
+            tasks_dir = Path(args.tasks_dir) if args.tasks_dir else default_tasks_dir(mode)
             task_files = sorted(tasks_dir.glob("task_*.txt"))
 
         system_prompt = build_system_prompt(mode)
         results = run_benchmark(models, task_files, base_url, api_key, n_runs,
-                                is_local=False, mode=mode)
+                                is_local=False, mode=mode,
+                                self_debug_rounds=args.self_debug)
         print_results_table(results)
         save_results(results)
         return
@@ -812,13 +1055,13 @@ def main():
     if args.task:
         task_files = [args.task]
     else:
-        tasks_dir = Path(args.tasks_dir)
+        tasks_dir = Path(args.tasks_dir) if args.tasks_dir else default_tasks_dir(args.mode)
         task_files = sorted(tasks_dir.glob("task_*.txt"))
         if not task_files:
             print(f"ERROR: No task files found in {tasks_dir}")
             sys.exit(1)
 
-    print(f"\nESFlow Benchmark")
+    print(f"\nESMFlow Benchmark")
     print(f"  Endpoint: {'Local (LM Studio)' if is_local else 'Depot API'}")
     print(f"  Prompt:   {args.mode} ({'YAML workflow' if args.mode == 'protocol' else 'Python code-gen'})")
     print(f"  Models:   {len(models)}")
@@ -827,9 +1070,12 @@ def main():
     print(f"  Total:    {len(models) * len(task_files) * args.runs} calls")
     print(f"  API:      {base_url}")
     print(f"  Models:   {', '.join(models)}")
+    if args.self_debug > 0:
+        print(f"  Debug:    up to {args.self_debug} self-debug rounds per crash")
 
     results = run_benchmark(models, task_files, base_url, api_key, args.runs,
-                            is_local=is_local, mode=args.mode)
+                            is_local=is_local, mode=args.mode,
+                            self_debug_rounds=args.self_debug)
     print_results_table(results)
     save_results(results)
 

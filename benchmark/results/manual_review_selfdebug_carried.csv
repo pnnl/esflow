@@ -1,0 +1,77 @@
+mode,task,model,run,final_source,manual_grade,notes
+baseline,task_01_obs_summary,claude-haiku-4-5-20251001,1,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-haiku-4-5-20251001,2,original,success,computed stats on raw daily data; n=1826; matches reference
+baseline,task_01_obs_summary,claude-haiku-4-5-20251001,3,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-haiku-4-5-20251001,4,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-opus-4-6,1,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-opus-4-6,2,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-opus-4-6,3,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,claude-opus-4-6,4,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gemini-2.5-flash,1,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gemini-2.5-flash,2,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gemini-2.5-flash,3,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gemini-2.5-flash,4,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gpt-5,1,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gpt-5,2,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gpt-5,3,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,gpt-5,4,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,o4-mini,1,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,o4-mini,2,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,o4-mini,3,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,o4-mini,4,original,silent,aggregated daily to monthly before computing stats; n=60 not 1826; Orange River 1.5% off
+baseline,task_01_obs_summary,phi-4,1,original,success,computed stats on raw daily data; n=1826; matches reference
+baseline,task_01_obs_summary,phi-4,2,original,success,computed stats on raw daily data; n=1826; matches reference
+baseline,task_01_obs_summary,phi-4,3,original,success,computed stats on raw daily data; n=1826; matches reference
+baseline,task_01_obs_summary,phi-4,4,original,success,computed stats on raw daily data; n=1826; matches reference
+baseline,task_02_seasonal_runoff,claude-haiku-4-5-20251001,2,original,success,global mean 0.574 mm/day matches reference simple mean; correct spatial pattern
+baseline,task_02_seasonal_runoff,claude-haiku-4-5-20251001,3,original,silent,dropped ~2000 negative-runoff cells before averaging; biases mean upward 0.600 vs 0.574 mm/day (~4.5%)
+baseline,task_02_seasonal_runoff,claude-haiku-4-5-20251001,4,original,obvious,produced histogram instead of map; global mean 0.244 mm/day from ocean dilution
+baseline,task_02_seasonal_runoff,claude-opus-4-6,2,original,success,correct QRUNOFF map 1985-1989; global area-weighted mean matches reference (8.63e-6 mm/s)
+baseline,task_02_seasonal_runoff,claude-opus-4-6,3,original,success,correct QRUNOFF map 1985-1989; global area-weighted mean matches reference
+baseline,task_02_seasonal_runoff,claude-opus-4-6,4,original,success,correct QRUNOFF map 1985-1989; global area-weighted mean matches reference
+baseline,task_02_seasonal_runoff,gpt-5,3,original,silent,hand-rolled area weighting from lat/lon edges instead of model native area variable; ~4% drift in global mean; poor colorbar choice
+baseline,task_02_seasonal_runoff,o4-mini,1,original,obvious,no land mask — ocean zeros dilute global mean by ~60%; 2.83e-6 vs 6.65e-6 mm/s; map washed out
+baseline,task_03_et_benchmark,claude-haiku-4-5-20251001,2,original,obvious,MODIS ET not converted from kg/m2/s to mm/day; bias=1.679 is model ET value not actual bias
+baseline,task_03_et_benchmark,claude-haiku-4-5-20251001,4,original,obvious,MODIS ET not converted from kg/m2/s to mm/day; bias=1.679; obs_mean=1.63e-5 reveals unconverted units
+baseline,task_03_et_benchmark,claude-opus-4-6,1,original,silent,bilinear interpolation for regridding instead of conservative remapping; ~7% mean bias drift
+baseline,task_03_et_benchmark,claude-opus-4-6,2,original,silent,bilinear interpolation for regridding instead of conservative remapping; ~7% mean bias drift
+baseline,task_03_et_benchmark,claude-opus-4-6,3,original,silent,bilinear interpolation for regridding instead of conservative remapping; ~7% mean bias drift
+baseline,task_03_et_benchmark,claude-opus-4-6,4,original,silent,bilinear interpolation for regridding instead of conservative remapping; ~7% mean bias drift
+baseline,task_03_et_benchmark,gpt-5,3,original,obvious,MODIS ET not converted from kg/m2/s to mm/day; bias = model_mmday - obs_mm/s ≈ 1.91; entire map red
+baseline,task_03_et_benchmark,gpt-5,4,original,obvious,unit conversion correct but summary stats failed (nan in CSV); map pattern reasonable but deliverable broken
+baseline,task_03_et_benchmark,o4-mini,3,original,obvious,blank map — no data plotted; bias=0.0 and empty correlation; regridding or extraction failed silently
+baseline,task_03_et_benchmark,o4-mini,4,original,obvious,blank map — no data plotted; empty CSV metrics; same silent regridding failure as run3
+baseline,task_04_streamflow_fdc,claude-opus-4-6,1,original,obvious,"numpy broadcast error (360,) vs (720,) in gauge matching; no data extracted; blank map"
+baseline,task_04_streamflow_fdc,claude-opus-4-6,2,original,obvious,numpy broadcast error in gauge matching; all 6 FDC panels show 'No data available'
+baseline,task_04_streamflow_fdc,claude-opus-4-6,4,original,obvious,numpy broadcast error in gauge matching; all 6 FDC panels show 'No data'
+baseline,task_05_basin_streamflow,claude-opus-4-6,4,original,obvious,cftime.DatetimeNoLeap not convertible via pd.to_datetime(); model data extraction failed for all 6 basins; figures show obs-only with no simulated line; no metrics computed
+baseline,task_05_basin_streamflow,gpt-5,2,original,obvious,CFTimeIndex.to_period() not supported; model data extraction failed for all 6 basins; figures show obs-only; all metrics NaN; N_points=0
+baseline,task_06_water_balance,claude-haiku-4-5-20251001,2,original,obvious,P conversion factor 86.4 instead of 86400 (1000x too small); P≈0.006 mm/day for Amazon vs expected 6.0; residuals massively negative
+baseline,task_06_water_balance,claude-haiku-4-5-20251001,3,original,obvious,TopologyException on 5/6 basin polygons; fallback gives identical values (1.73 mm/day P) for Amazon/Missouri/Danube/Mekong/Orange; only Columbia correct
+baseline,task_06_water_balance,gpt-5,2,original,obvious,dask .item() failure — residual map renders but all basin means NaN; CSV all empty; bar chart blank; same bug as gpt-5 T3 run4
+baseline,task_06_water_balance,gpt-5,3,original,silent,no landfrac weighting — area weights include ocean fractions of coastal cells; ~1-2% drift in basin means vs reference
+baseline,task_07_integrated_diagnostic,claude-opus-4-6,3,original,obvious,TopologyException kills 5/6 basin polygon clips; only Columbia has P/ET/Q/streamflow data; rest all NaN
+baseline,task_07_integrated_diagnostic,claude-opus-4-6,4,original,silent,P/ET/Q match reference <0.01% but streamflow bias differs significantly (Missouri 283% vs ref 200%; Danube 38% vs ref 22%) — different grid cell matching method lands 1 cell off for some gauges
+baseline,task_07_integrated_diagnostic,gpt-5,2,original,obvious,model P/ET left in mm/s while obs and Q in mm/day — bar chart shows model P/ET as zero; cftime calendar kills all streamflow extraction; bias = mm/day − mm/s is meaningless
+baseline,task_07_integrated_diagnostic,gpt-5,3,original,obvious,cftime 'No overlapping streamflow period' for all 6 basins; CSVs saved to ./output/ not run3_output/; radar charts mostly empty (1 spoke); bar chart P/ET/Q looks reasonable but no CSV deliverable
+protocol,task_02_seasonal_runoff,o4-mini,4,original,silent,"years: [1985,1989] interpreted as list-of-2 not range; only 24/60 months loaded; 1.5% global mean bias"
+protocol,task_04_streamflow_fdc,claude-haiku-4-5-20251001,1,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,claude-haiku-4-5-20251001,2,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,claude-haiku-4-5-20251001,3,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,claude-haiku-4-5-20251001,4,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,o4-mini,2,original,silent,"years: [1985,1989] list-of-2 not range; only 2/5 years loaded; FDC shape distorted; volume_bias 1.38 vs 1.05"
+protocol,task_04_streamflow_fdc,o4-mini,4,original,silent,"years: [1985,1989] list-of-2 not range; only 2/5 years loaded; FDC shape distorted; volume_bias 1.38 vs 1.05"
+protocol,task_04_streamflow_fdc,phi-4,1,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,phi-4,2,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,phi-4,3,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_04_streamflow_fdc,phi-4,4,original,success,6-gauge subset numerically matches reference; filtered early via gauge_ids param
+protocol,task_05_basin_streamflow,o4-mini,1,original,success,all 63 gauges computed; 6 focus gauges exact match with reference
+protocol,task_05_basin_streamflow,phi-4,1,original,success,all 63 gauges computed; 6 focus gauges exact match with reference
+protocol,task_05_basin_streamflow,phi-4,2,original,success,all 63 gauges computed; 6 focus gauges exact match with reference
+protocol,task_05_basin_streamflow,phi-4,3,original,success,all 63 gauges computed; 6 focus gauges exact match with reference
+protocol,task_05_basin_streamflow,phi-4,4,original,success,all 63 gauges computed; 6 focus gauges exact match with reference
+protocol,task_06_water_balance,o4-mini,1,original,silent,"years: [1985,1989] list-of-2; ~1.3% basin_mean ET drift"
+protocol,task_06_water_balance,o4-mini,2,original,silent,"years: [1985,1989] list-of-2 + different filename (et_basin_means.csv); values also wrong"
+protocol,task_06_water_balance,o4-mini,3,original,silent,"years: [1985,1989] list-of-2; ~1.3% basin_mean ET drift"
+protocol,task_06_water_balance,o4-mini,4,original,silent,"years: [1985,1989] list-of-2; ~1.3% basin_mean ET drift"
+protocol,task_07_integrated_diagnostic,o4-mini,1,original,silent,"years: [1985,1989] list-of-2; budget values wrong across all components; e.g. Orange River streamflow_bias 7.64 vs 11.14"

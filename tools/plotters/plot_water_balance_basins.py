@@ -19,7 +19,7 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
 
 
@@ -102,7 +102,7 @@ def _draw_polygon(ax, feature, transform, color='black', lw=1.5):
     ax.add_collection(pc)
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     residual_file = config['residual_file']
     basin_precip_file = config['basin_precip_file']

@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+import os
+import glob
+import requests
+import numpy as np
+import pandas as pd
+import xarray as xr
+import geopandas as gpd
+from shapely.geometry import Point
+import matplotlib.pyplot as plt
+from scipy.stats import wasserstein_distance
+
+# Settings
+case = "sample.v3.LR.historical"
+years = range(1985, 1990)
+basin_ids = {
+    "Amazon": 3629000,
+    "Missouri": 4121801,
+    "Columbia": 4115200,
+    "Danube": 6742900,
+    "Mekong": 2969100,
+    "Orange": 1159100
+}
+indir = "./data/sample/e3sm"
+obs_stream_dir = "./data/sample/obs/streamflow"
+gauge_meta_file = "./data/sample/obs/gauge_metadata.csv"
+basin_geojson = "./data/sample/obs/basin_polygons.geojson"
+ilamb_dir = "./data/ilamb"
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_07_integrated_diagnostic/run3_output"
+os.makedirs(output_dir, exist_ok=True)
+
+# Part 1: Load ELM monthly and compute climatologies
+lnd_files = sorted(glob.glob(f"{indir}/lnd/{case}.elm.h0.*.nc"))
+lnd_ds = xr.open_mfdataset(
+    [f for f in lnd_files if int(os.path.basename(f).split(".")[-2].split("-")[0]) in years],
+    combine='by_coords'
+)
+# Convert fluxes to mm/day
+P_mod = (lnd_ds["RAIN"] + lnd_ds["SNOW"]) * 86400.0
+ET_mod = (lnd_ds["QVEGE"] + lnd_ds["QVEGT"] + lnd_ds["QSOIL"]) * 86400.0
+Q_mod = lnd_ds["QRUNOFF"] * 86400.0
+P_mod_clim = P_mod.mean(dim="time")
+ET_mod_clim = ET_mod.mean(dim="time")
+Q_mod_clim = Q_mod.mean(dim="time")
+
+# Part 2: Fetch ILAMB data and compute climatologies
+ilamb_base = "https://www.ilamb.org/ILAMB-Data/DATA"
+def fetch_ilamb(relative_path):
+    local_path = os.path.join(ilamb_dir, relative_path)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    if not os.path.exists(local_path):
+        url = f"{ilamb_base}/{relative_path}"
+        try:
+            r = requests.get(url, stream=True)
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+    return local_path
+
+# Precipitation GPCC
+pr_file = fetch_ilamb("pr/GPCCv2018/pr.nc")
+ds_pr = xr.open_dataset(pr_file)
+pr = ds_pr["pr"]  # mm/day
+pr = pr.assign_coords(lon=((pr.lon + 180) % 360) - 180).sortby("lon")
+pr_clim = pr.sel(time=slice("1985-01-01", "1989-12-31")).mean(dim="time")
+
+# ET MODIS
+et_file = fetch_ilamb("evspsbl/MODIS/et_0.5x0.5.nc")
+ds_et = xr.open_dataset(et_file)
+et = ds_et["et"]  # mm/day
+et = et.assign_coords(lon=((et.lon + 180) % 360) - 180).sortby("lon")
+et_clim = et.sel(time=slice("1985-01-01", "1989-12-31")).mean(dim="time")
+
+# Runoff LORA
+ro_file = fetch_ilamb("mrro/LORA/LORA.nc")
+ds_ro = xr.open_dataset(ro_file)
+ro = ds_ro["mrro"]  # mm/day
+ro = ro.assign_coords(lon=((ro.lon + 180) % 360) - 180).sortby("lon")
+ro_clim = ro.sel(time=slice("1985-01-01", "1989-12-31")).mean(dim="time")
+
+# Part 3: Basin averaging
+basins = gpd.read_file(basin_geojson)
+# Pre-compute grid for model and obs
+lat_mod = P_mod_clim.lat.values
+lon_mod = P_mod_clim.lon.values
+lon2d_mod, lat2d_mod = np.meshgrid(lon_mod, lat_mod)
+coslat_mod = np.cos(np.deg2rad(lat2d_mod))
+lat_pr = pr_clim.lat.values
+lon_pr = pr_clim.lon.values
+lon2d_pr, lat2d_pr = np.meshgrid(lon_pr, lat_pr)
+coslat_pr = np.cos(np.deg2rad(lat2d_pr))
+lat_et = et_clim.lat.values
+lon_et = et_clim.lon.values
+lon2d_et, lat2d_et = np.meshgrid(lon_et, lat_et)
+coslat_et = np.cos(np.deg2rad(lat2d_et))
+lat_ro = ro_clim.lat.values
+lon_ro = ro_clim.lon.values
+lon2d_ro, lat2d_ro = np.meshgrid(lon_ro, lat_ro)
+coslat_ro = np.cos(np.deg2rad(lat2d_ro))
+
+results = []
+for name, gid in basin_ids.items():
+    poly = basins.loc[basins["grdc_no"] == gid].geometry.values[0]
+    # mask model
+    mask_mod = np.array([poly.contains(Point(x, y)) for x, y in zip(lon2d_mod.ravel(), lat2d_mod.ravel())]).reshape(lon2d_mod.shape)
+    mask_pr = np.array([poly.contains(Point(x, y)) for x, y in zip(lon2d_pr.ravel(), lat2d_pr.ravel())]).reshape(lon2d_pr.shape)
+    mask_et = np.array([poly.contains(Point(x, y)) for x, y in zip(lon2d_et.ravel(), lat2d_et.ravel())]).reshape(lon2d_et.shape)
+    mask_ro = np.array([poly.contains(Point(x, y)) for x, y in zip(lon2d_ro.ravel(), lat2d_ro.ravel())]).reshape(lon2d_ro.shape)
+    # weighted means
+    def basin_mean(data, mask, weights):
+        vals = data.values
+        m = np.where(mask, vals, np.nan)
+        w = np.where(mask, weights, 0.0)
+        return np.nansum(m * w) / np.sum(w)
+    P_mod_b = basin_mean(P_mod_clim, mask_mod, coslat_mod)
+    ET_mod_b = basin_mean(ET_mod_clim, mask_mod, coslat_mod)
+    Q_mod_b = basin_mean(Q_mod_clim, mask_mod, coslat_mod)
+    P_obs_b = basin_mean(pr_clim, mask_pr, coslat_pr)
+    ET_obs_b = basin_mean(et_clim, mask_et, coslat_et)
+    Q_obs_b = basin_mean(ro_clim, mask_ro, coslat_ro)
+    # water balance residual (model minus obs)
+    resid_mod = P_mod_b - ET_mod_b - Q_mod_b
+    resid_obs = P_obs_b - ET_obs_b - Q_obs_b
+    resid_bias = resid_mod - resid_obs
+    results.append({
+        "basin": name,
+        "P_mod": P_mod_b,
+        "P_obs": P_obs_b,
+        "ET_mod": ET_mod_b,
+        "ET_obs": ET_obs_b,
+        "Q_mod": Q_mod_b,
+        "Q_obs": Q_obs_b,
+        "resid_bias": resid_bias
+    })
+
+summary_df = pd.DataFrame(results).set_index("basin")
+
+# Part 4: Streamflow FDC metrics
+# Read gauge metadata
+gmeta = pd.read_csv(gauge_meta_file, dtype={"gauge_id": str})
+gmeta["gauge_id"] = gmeta["gauge_id"].astype(int)
+# Get MOSART grid info
+mos_h0 = xr.open_dataset(f"{indir}/rof/{case}.mosart.h0.{years[0]}-01.nc")
+latc = mos_h0["lat"].values
+lonc = mos_h0["lon"].values
+nc = latc.size
+# find gauge positions
+gauge_indices = {}
+for name, gid in basin_ids.items():
+    row = gmeta.loc[gmeta["gauge_id"] == gid]
+    if row.empty:
+        continue
+    glat = row.lat.values[0]
+    glon = row.lon.values[0]
+    # compute distance
+    dist = np.sqrt((latc - glat)**2 + (lonc - glon)**2)
+    idx = int(np.argmin(dist))
+    gauge_indices[gid] = idx
+
+# load daily mosart discharge
+h1_files = sorted(glob.glob(f"{indir}/rof/{case}.mosart.h1.*-00000.nc"))
+# filter dates
+sel = []
+for f in h1_files:
+    basename = os.path.basename(f)
+    parts = basename.split(".")
+    datepart = parts[-2]
+    try:
+        pd.to_datetime(datepart)
+        sel.append(f)
+    except:
+        pass
+ds_h1 = xr.open_mfdataset(sel, combine='by_coords')
+dis = ds_h1["RIVER_DISCHARGE_OVER_LAND_LIQ"]  # time x ncol
+
+# compute metrics
+flow_metrics = {}
+for name, gid in basin_ids.items():
+    if gid not in gauge_indices:
+        continue
+    idx = gauge_indices[gid]
+    sim = dis[:, idx].sel(time=slice("1985-01-01", "1989-12-31")).values
+    # read obs
+    obs_file = os.path.join(obs_stream_dir, f"{gid}.csv")
+    df = pd.read_csv(obs_file, parse_dates=["date"])
+    df = df.set_index("date").loc["1985-01-01":"1989-12-31"]
+    obs = df["discharge_m3s"].values
+    # align
+    df_sim = pd.DataFrame({"sim": sim}, index=pd.to_datetime(ds_h1["time"].values))
+    df_obs = df
+    df_all = df_sim.join(df_obs.rename(columns={"discharge_m3s": "obs"}), how="inner")
+    ssim = df_all["sim"].values
+    sobs = df_all["obs"].values
+    # volume bias
+    vbias = (ssim.sum() - sobs.sum()) / sobs.sum() * 100.0
+    # wasserstein
+    wd = wasserstein_distance(sobs, ssim)
+    flow_metrics[name] = {"flow_bias_pct": vbias, "wasserstein": wd}
+
+# Merge metrics
+flow_df = pd.DataFrame(flow_metrics).T
+combined = summary_df.join(flow_df)
+
+# Part 5: Save outputs and plots
+# Save summary CSV
+try:
+    combined.to_csv(os.path.join(output_dir, "basin_summary.csv"))
+except Exception as e:
+    print("Error saving CSV:", e)
+
+# Save NetCDF of basin means
+try:
+    ds_sum = combined[["P_mod", "P_obs", "ET_mod", "ET_obs", "Q_mod", "Q_obs", "resid_bias", "flow_bias_pct", "wasserstein"]].to_xarray()
+    ds_sum.to_netcdf(os.path.join(output_dir, "basin_summary.nc"))
+except Exception as e:
+    print("Error saving NetCDF:", e)
+
+# Bar charts for P, ET, Q
+try:
+    fluxes = [("P", "P_mod", "P_obs"), ("ET", "ET_mod", "ET_obs"), ("Q", "Q_mod", "Q_obs")]
+    fig, axes = plt.subplots(1, 3, figsize=(18,6))
+    x = np.arange(len(combined.index))
+    width = 0.35
+    for ax, (label, mcol, ocol) in zip(axes, fluxes):
+        ax.bar(x - width/2, combined[mcol], width, label="Model")
+        ax.bar(x + width/2, combined[ocol], width, label="Obs")
+        ax.set_title(label)
+        ax.set_xticks(x)
+        ax.set_xticklabels(combined.index, rotation=45)
+        ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "flux_comparison.png"))
+    plt.close(fig)
+except Exception as e:
+    print("Error plotting bar chart:", e)
+
+# Radar chart of diagnostics
+try:
+    # metrics for radar
+    metrics = ["P_bias_pct", "ET_bias_pct", "run_bias_pct", "flow_bias_pct", "resid_norm_pct", "wass_norm_pct"]
+    # compute percent biases and normalized
+    comp = combined.copy()
+    comp["P_bias_pct"] = (comp["P_mod"] - comp["P_obs"]) / comp["P_obs"] * 100.0
+    comp["ET_bias_pct"] = (comp["ET_mod"] - comp["ET_obs"]) / comp["ET_obs"] * 100.0
+    comp["run_bias_pct"] = (comp["Q_mod"] - comp["Q_obs"]) / comp["Q_obs"] * 100.0
+    # normalize resid and wasserstein
+    comp["resid_norm_pct"] = np.abs(comp["resid_bias"]) / np.nanmax(np.abs(comp["resid_bias"])) * 100.0
+    comp["wass_norm_pct"] = comp["wasserstein"] / np.nanmax(comp["wasserstein"]) * 100.0
+    # radar setup
+    labels = metrics
+    N = len(labels)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(111, polar=True)
+    for idx, row in comp.iterrows():
+        vals = [row[m] for m in metrics]
+        vals += vals[:1]
+        ax.plot(angles, vals, label=idx)
+        ax.fill(angles, vals, alpha=0.1)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels)
+    ax.set_rlabel_position(30)
+    ax.set_title("Basin Diagnostics Radar")
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "radar_diagnostics.png"))
+    plt.close(fig)
+except Exception as e:
+    print("Error plotting radar chart:", e)
+
+print("Done, outputs in:", output_dir)

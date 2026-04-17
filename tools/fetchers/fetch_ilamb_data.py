@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 # Registry of known ILAMB datasets: (variable, dataset) -> relative URL path
 ILAMB_DATASETS = {
@@ -78,7 +78,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     variable = config['variable']
     dataset = config['dataset']

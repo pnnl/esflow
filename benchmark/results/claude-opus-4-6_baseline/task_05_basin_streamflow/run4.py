@@ -1,0 +1,634 @@
+import os
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from scipy.spatial import cKDTree
+import json
+import warnings
+
+warnings.filterwarnings("ignore")
+
+# ── Configuration ──────────────────────────────────────────────────────────
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-opus-4-6_baseline/task_05_basin_streamflow/run4_output"
+os.makedirs(output_dir, exist_ok=True)
+
+data_root = "./data/sample/e3sm"
+case_name = "sample.v3.LR.historical"
+rof_dir = os.path.join(data_root, "rof")
+obs_dir = "./data/sample/obs/streamflow"
+gauge_meta_path = "./data/sample/obs/gauge_metadata.csv"
+basin_poly_path = "./data/sample/obs/basin_polygons.geojson"
+
+year_start, year_end = 1985, 1989
+discharge_var = "RIVER_DISCHARGE_OVER_LAND_LIQ"
+
+basin_gauges = {
+    "Amazon": "3629000",
+    "Missouri": "4121801",
+    "Columbia": "4115200",
+    "Danube": "6742900",
+    "Mekong": "2969100",
+    "Orange": "1159100",
+}
+
+# ── Helper functions ───────────────────────────────────────────────────────
+def compute_rmse(sim, obs):
+    return np.sqrt(np.nanmean((sim - obs) ** 2))
+
+def compute_nse(sim, obs):
+    numerator = np.nansum((obs - sim) ** 2)
+    denominator = np.nansum((obs - np.nanmean(obs)) ** 2)
+    if denominator == 0:
+        return np.nan
+    return 1.0 - numerator / denominator
+
+def compute_kge(sim, obs):
+    mask = np.isfinite(sim) & np.isfinite(obs)
+    if mask.sum() < 3:
+        return np.nan
+    s, o = sim[mask], obs[mask]
+    r = np.corrcoef(s, o)[0, 1]
+    alpha = np.std(s) / np.std(o) if np.std(o) > 0 else np.nan
+    beta = np.mean(s) / np.mean(o) if np.mean(o) > 0 else np.nan
+    if np.isnan(alpha) or np.isnan(beta) or np.isnan(r):
+        return np.nan
+    return 1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+
+def compute_pbias(sim, obs):
+    denom = np.nansum(obs)
+    if denom == 0:
+        return np.nan
+    return 100.0 * np.nansum(sim - obs) / denom
+
+# ── Load gauge metadata ───────────────────────────────────────────────────
+try:
+    gauge_meta = pd.read_csv(gauge_meta_path)
+    gauge_meta["gauge_id"] = gauge_meta["gauge_id"].astype(str)
+    print(f"Loaded gauge metadata: {len(gauge_meta)} gauges")
+    print(gauge_meta.head())
+except Exception as e:
+    print(f"Error loading gauge metadata: {e}")
+    gauge_meta = pd.DataFrame()
+
+# ── Load basin polygons ───────────────────────────────────────────────────
+basin_polygons = {}
+try:
+    with open(basin_poly_path, "r") as f:
+        geojson = json.load(f)
+    for feature in geojson["features"]:
+        gid = str(feature["properties"].get("grdc_no", ""))
+        basin_polygons[gid] = feature["geometry"]
+    print(f"Loaded {len(basin_polygons)} basin polygons")
+except Exception as e:
+    print(f"Error loading basin polygons: {e}")
+
+# ── Load MOSART model output ──────────────────────────────────────────────
+print("\nLoading MOSART monthly output files...")
+mosart_files = []
+for year in range(year_start, year_end + 1):
+    for month in range(1, 13):
+        fname = f"{case_name}.mosart.h0.{year:04d}-{month:02d}.nc"
+        fpath = os.path.join(rof_dir, fname)
+        if os.path.exists(fpath):
+            mosart_files.append(fpath)
+
+print(f"Found {len(mosart_files)} monthly MOSART files")
+
+# Also try daily files as fallback
+mosart_daily_files = []
+if len(mosart_files) == 0:
+    print("No monthly files found, searching for daily files...")
+    for year in range(year_start, year_end + 1):
+        for month in range(1, 13):
+            for day in range(1, 32):
+                fname = f"{case_name}.mosart.h1.{year:04d}-{month:02d}-{day:02d}-00000.nc"
+                fpath = os.path.join(rof_dir, fname)
+                if os.path.exists(fpath):
+                    mosart_daily_files.append(fpath)
+    print(f"Found {len(mosart_daily_files)} daily MOSART files")
+
+# Determine which files to use
+use_daily = len(mosart_files) == 0 and len(mosart_daily_files) > 0
+files_to_use = mosart_daily_files if use_daily else mosart_files
+
+if len(files_to_use) == 0:
+    # List what's actually in the directory
+    try:
+        all_rof_files = sorted(os.listdir(rof_dir))
+        print(f"Files in {rof_dir}: {all_rof_files[:20]}...")
+        # Try to load whatever is there
+        nc_files = [os.path.join(rof_dir, f) for f in all_rof_files if f.endswith(".nc")]
+        if nc_files:
+            files_to_use = nc_files
+            print(f"Using {len(files_to_use)} NC files found in rof directory")
+    except Exception as e:
+        print(f"Error listing rof dir: {e}")
+
+# Load the MOSART data
+ds_mosart = None
+try:
+    if len(files_to_use) > 0:
+        ds_mosart = xr.open_mfdataset(files_to_use, combine="nested", concat_dim="time",
+                                       data_vars="minimal", coords="minimal",
+                                       compat="override")
+        print(f"MOSART dataset loaded. Dims: {dict(ds_mosart.dims)}")
+        print(f"Variables: {list(ds_mosart.data_vars)}")
+        print(f"Coordinates: {list(ds_mosart.coords)}")
+        # Filter to the analysis period
+        ds_mosart = ds_mosart.sel(time=slice(f"{year_start}-01-01", f"{year_end}-12-31"))
+        print(f"Time range: {ds_mosart.time.values[0]} to {ds_mosart.time.values[-1]}")
+except Exception as e:
+    print(f"Error loading MOSART data: {e}")
+    # Try loading one file to inspect
+    if len(files_to_use) > 0:
+        try:
+            ds_single = xr.open_dataset(files_to_use[0])
+            print(f"Single file vars: {list(ds_single.data_vars)}")
+            print(f"Single file coords: {list(ds_single.coords)}")
+            print(f"Single file dims: {dict(ds_single.dims)}")
+            ds_single.close()
+        except Exception as e2:
+            print(f"Error loading single file: {e2}")
+
+# ── Extract grid coordinates ──────────────────────────────────────────────
+grid_lat = None
+grid_lon = None
+
+if ds_mosart is not None:
+    # Try various coordinate names
+    for lat_name in ["lat", "latitude", "yc", "latixy"]:
+        if lat_name in ds_mosart.coords or lat_name in ds_mosart.data_vars:
+            grid_lat = ds_mosart[lat_name].values
+            break
+    for lon_name in ["lon", "longitude", "xc", "longxy"]:
+        if lon_name in ds_mosart.coords or lon_name in ds_mosart.data_vars:
+            grid_lon = ds_mosart[lon_name].values
+            break
+
+    if grid_lat is not None and grid_lon is not None:
+        print(f"Grid lat shape: {grid_lat.shape}, lon shape: {grid_lon.shape}")
+        # If 1D, create meshgrid pairs for KDTree
+        if grid_lat.ndim == 1 and grid_lon.ndim == 1:
+            lon_grid, lat_grid = np.meshgrid(grid_lon, grid_lat)
+        elif grid_lat.ndim == 2:
+            lat_grid = grid_lat
+            lon_grid = grid_lon
+        else:
+            lat_grid = grid_lat
+            lon_grid = grid_lon
+    else:
+        print("Could not find lat/lon coordinates in MOSART dataset")
+
+# ── Match gauges to grid ──────────────────────────────────────────────────
+def find_nearest_gridcell(gauge_lat, gauge_lon, lat_arr, lon_arr):
+    """Find the nearest grid cell indices for a given lat/lon."""
+    if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+        # 1D coordinate arrays (regular grid)
+        lat_idx = np.argmin(np.abs(lat_arr - gauge_lat))
+        # Handle longitude wrapping
+        lon_diff = np.abs(lon_arr - gauge_lon)
+        lon_diff_wrap = np.abs(lon_arr - (gauge_lon + 360))
+        lon_diff_wrap2 = np.abs(lon_arr - (gauge_lon - 360))
+        lon_diff_min = np.minimum(lon_diff, np.minimum(lon_diff_wrap, lon_diff_wrap2))
+        lon_idx = np.argmin(lon_diff_min)
+        return lat_idx, lon_idx
+    else:
+        # 2D coordinate arrays
+        flat_lat = lat_arr.ravel()
+        flat_lon = lon_arr.ravel()
+        # Convert to radians for haversine-like distance
+        dist = np.sqrt((flat_lat - gauge_lat)**2 + (flat_lon - gauge_lon)**2)
+        dist_wrap = np.sqrt((flat_lat - gauge_lat)**2 + (flat_lon - (gauge_lon + 360))**2)
+        min_idx = np.argmin(np.minimum(dist, dist_wrap))
+        idx = np.unravel_index(min_idx, lat_arr.shape)
+        return idx
+
+# ── Process each basin ─────────────────────────────────────────────────────
+metrics_all = []
+
+for basin_name, gauge_id in basin_gauges.items():
+    print(f"\n{'='*60}")
+    print(f"Processing basin: {basin_name} (gauge {gauge_id})")
+    print(f"{'='*60}")
+
+    # Get gauge info
+    gauge_info = gauge_meta[gauge_meta["gauge_id"] == gauge_id] if len(gauge_meta) > 0 else pd.DataFrame()
+    if len(gauge_info) == 0:
+        print(f"  WARNING: Gauge {gauge_id} not found in metadata, skipping...")
+        continue
+
+    gauge_lat = gauge_info.iloc[0]["lat"]
+    gauge_lon = gauge_info.iloc[0]["lon"]
+    gauge_area = gauge_info.iloc[0].get("area_km2", np.nan)
+    river_name = gauge_info.iloc[0].get("river_name", basin_name)
+    print(f"  Gauge location: ({gauge_lat:.2f}, {gauge_lon:.2f}), Area: {gauge_area} km2")
+
+    # ── Load observed discharge ────────────────────────────────────────────
+    obs_file = os.path.join(obs_dir, f"{gauge_id}.csv")
+    obs_ts = None
+    try:
+        obs_df = pd.read_csv(obs_file, parse_dates=["date"])
+        obs_df = obs_df[(obs_df["date"] >= f"{year_start}-01-01") &
+                        (obs_df["date"] <= f"{year_end}-12-31")]
+        obs_df = obs_df.set_index("date").sort_index()
+        obs_ts = obs_df["discharge_m3s"]
+        print(f"  Loaded obs: {len(obs_ts)} daily values, range: {obs_ts.index[0]} to {obs_ts.index[-1]}")
+    except Exception as e:
+        print(f"  Error loading obs for gauge {gauge_id}: {e}")
+
+    # ── Extract simulated discharge ────────────────────────────────────────
+    sim_ts = None
+    if ds_mosart is not None and grid_lat is not None:
+        try:
+            # Find nearest grid cell
+            if grid_lat.ndim == 1 and grid_lon.ndim == 1:
+                lat_idx, lon_idx = find_nearest_gridcell(gauge_lat, gauge_lon, grid_lat, grid_lon)
+                matched_lat = grid_lat[lat_idx]
+                matched_lon = grid_lon[lon_idx]
+                print(f"  Matched grid cell: lat_idx={lat_idx}, lon_idx={lon_idx}")
+                print(f"  Grid cell coords: ({matched_lat:.2f}, {matched_lon:.2f})")
+
+                # Check if discharge_var exists
+                if discharge_var in ds_mosart.data_vars:
+                    var_data = ds_mosart[discharge_var]
+                    dim_names = var_data.dims
+                    print(f"  Variable dims: {dim_names}")
+
+                    # Extract based on dimensions
+                    if len(dim_names) == 3:
+                        # (time, lat, lon)
+                        lat_dim = [d for d in dim_names if d != "time"][0]
+                        lon_dim = [d for d in dim_names if d != "time"][1]
+                        sim_data = var_data.isel({lat_dim: lat_idx, lon_dim: lon_idx})
+                    elif len(dim_names) == 2:
+                        # (time, gridcell) - unstructured
+                        # Need to find the grid cell differently
+                        non_time = [d for d in dim_names if d != "time"][0]
+                        # Build KDTree from flat coordinates
+                        flat_lat = grid_lat.ravel()
+                        flat_lon = grid_lon.ravel()
+                        # Handle longitude convention
+                        g_lon = gauge_lon if gauge_lon >= 0 else gauge_lon + 360
+                        dist = np.sqrt((flat_lat - gauge_lat)**2 +
+                                       np.minimum((flat_lon - g_lon)**2,
+                                                  (flat_lon - gauge_lon)**2))
+                        cell_idx = np.argmin(dist)
+                        sim_data = var_data.isel({non_time: cell_idx})
+                        matched_lat = flat_lat[cell_idx]
+                        matched_lon = flat_lon[cell_idx]
+                        print(f"  Unstructured grid, cell {cell_idx}: ({matched_lat:.2f}, {matched_lon:.2f})")
+                    else:
+                        sim_data = var_data.isel(lat=lat_idx, lon=lon_idx)
+
+                    sim_df = sim_data.to_dataframe().reset_index()
+                    sim_df["time"] = pd.to_datetime(sim_df["time"])
+                    sim_df = sim_df.set_index("time").sort_index()
+                    sim_ts = sim_df[discharge_var]
+                    print(f"  Extracted sim: {len(sim_ts)} time steps")
+                    print(f"  Sim stats: mean={sim_ts.mean():.1f}, max={sim_ts.max():.1f} m3/s")
+                else:
+                    print(f"  Variable {discharge_var} not found in dataset")
+                    print(f"  Available vars: {list(ds_mosart.data_vars)}")
+            else:
+                # 2D grid
+                idx = find_nearest_gridcell(gauge_lat, gauge_lon, grid_lat, grid_lon)
+                if discharge_var in ds_mosart.data_vars:
+                    var_data = ds_mosart[discharge_var]
+                    dim_names = var_data.dims
+                    non_time = [d for d in dim_names if d != "time"]
+                    if len(non_time) == 2:
+                        sim_data = var_data.isel({non_time[0]: idx[0], non_time[1]: idx[1]})
+                    elif len(non_time) == 1:
+                        flat_idx = np.ravel_multi_index(idx, grid_lat.shape) if isinstance(idx, tuple) else idx
+                        sim_data = var_data.isel({non_time[0]: flat_idx})
+                    sim_df = sim_data.to_dataframe().reset_index()
+                    sim_df["time"] = pd.to_datetime(sim_df["time"])
+                    sim_df = sim_df.set_index("time").sort_index()
+                    sim_ts = sim_df[discharge_var]
+                    print(f"  Extracted sim: {len(sim_ts)} time steps")
+        except Exception as e:
+            print(f"  Error extracting simulated discharge: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ── Align sim and obs on common time index ─────────────────────────────
+    sim_monthly = None
+    obs_monthly = None
+
+    if sim_ts is not None and obs_ts is not None:
+        try:
+            # Resample obs to monthly for comparison with monthly model output
+            obs_monthly = obs_ts.resample("MS").mean()
+            obs_monthly.index.name = "time"
+
+            # Make sure sim is monthly
+            if len(sim_ts) > 120:  # likely daily
+                sim_monthly = sim_ts.resample("MS").mean()
+            else:
+                sim_monthly = sim_ts.copy()
+            sim_monthly.index.name = "time"
+
+            # Align on common dates
+            common_idx = sim_monthly.index.intersection(obs_monthly.index)
+            if len(common_idx) > 0:
+                sim_aligned = sim_monthly.loc[common_idx].values.astype(float)
+                obs_aligned = obs_monthly.loc[common_idx].values.astype(float)
+
+                # Remove NaN pairs
+                valid = np.isfinite(sim_aligned) & np.isfinite(obs_aligned)
+                sim_valid = sim_aligned[valid]
+                obs_valid = obs_aligned[valid]
+
+                print(f"  Common monthly time steps: {len(common_idx)}, valid: {valid.sum()}")
+
+                # Compute metrics
+                if len(sim_valid) > 3:
+                    rmse = compute_rmse(sim_valid, obs_valid)
+                    nse = compute_nse(sim_valid, obs_valid)
+                    kge = compute_kge(sim_valid, obs_valid)
+                    pbias = compute_pbias(sim_valid, obs_valid)
+                    print(f"  RMSE:  {rmse:.2f} m3/s")
+                    print(f"  NSE:   {nse:.4f}")
+                    print(f"  KGE:   {kge:.4f}")
+                    print(f"  PBIAS: {pbias:.2f}%")
+
+                    metrics_all.append({
+                        "basin": basin_name,
+                        "gauge_id": gauge_id,
+                        "river_name": river_name,
+                        "lat": gauge_lat,
+                        "lon": gauge_lon,
+                        "area_km2": gauge_area,
+                        "n_months": int(valid.sum()),
+                        "obs_mean_m3s": float(np.nanmean(obs_valid)),
+                        "sim_mean_m3s": float(np.nanmean(sim_valid)),
+                        "RMSE": float(rmse),
+                        "NSE": float(nse),
+                        "KGE": float(kge),
+                        "PBIAS": float(pbias),
+                    })
+                else:
+                    print("  Not enough valid data for metrics")
+            else:
+                print("  No common time steps between sim and obs")
+        except Exception as e:
+            print(f"  Error aligning/computing metrics: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ── Create per-basin figure ────────────────────────────────────────────
+    try:
+        fig = plt.figure(figsize=(16, 10))
+
+        # --- Panel 1: Basin map ---
+        try:
+            import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
+            has_cartopy = True
+        except ImportError:
+            has_cartopy = False
+
+        if has_cartopy:
+            ax_map = fig.add_subplot(2, 1, 1, projection=ccrs.PlateCarree())
+        else:
+            ax_map = fig.add_subplot(2, 1, 1)
+
+        # Get basin polygon
+        poly_coords = None
+        if gauge_id in basin_polygons:
+            geom = basin_polygons[gauge_id]
+            geom_type = geom.get("type", "")
+
+            def extract_polygons(geometry):
+                """Extract list of polygon coordinate arrays from GeoJSON geometry."""
+                polys = []
+                gtype = geometry.get("type", "")
+                if gtype == "Polygon":
+                    for ring in geometry["coordinates"]:
+                        polys.append(np.array(ring))
+                elif gtype == "MultiPolygon":
+                    for polygon in geometry["coordinates"]:
+                        for ring in polygon:
+                            polys.append(np.array(ring))
+                return polys
+
+            all_polys = extract_polygons(geom)
+
+            if all_polys:
+                # Determine bounding box for map extent
+                all_lons = np.concatenate([p[:, 0] for p in all_polys])
+                all_lats = np.concatenate([p[:, 1] for p in all_polys])
+                lon_min, lon_max = all_lons.min(), all_lons.max()
+                lat_min, lat_max = all_lats.min(), all_lats.max()
+                lon_pad = max(2.0, (lon_max - lon_min) * 0.15)
+                lat_pad = max(2.0, (lat_max - lat_min) * 0.15)
+
+                if has_cartopy:
+                    ax_map.set_extent([lon_min - lon_pad, lon_max + lon_pad,
+                                       lat_min - lat_pad, lat_max + lat_pad],
+                                      crs=ccrs.PlateCarree())
+                    ax_map.add_feature(cfeature.LAND, facecolor="lightgray", alpha=0.5)
+                    ax_map.add_feature(cfeature.OCEAN, facecolor="lightblue", alpha=0.3)
+                    ax_map.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="gray")
+                    ax_map.add_feature(cfeature.RIVERS, linewidth=0.5, edgecolor="blue", alpha=0.5)
+                    ax_map.coastlines(linewidth=0.5)
+                    try:
+                        gl = ax_map.gridlines(draw_labels=True, linewidth=0.3, alpha=0.5)
+                        gl.top_labels = False
+                        gl.right_labels = False
+                    except Exception:
+                        pass
+
+                    # Draw basin polygon(s)
+                    for poly in all_polys:
+                        ax_map.plot(poly[:, 0], poly[:, 1], 'b-', linewidth=2,
+                                    transform=ccrs.PlateCarree(), label="Basin boundary")
+                        ax_map.fill(poly[:, 0], poly[:, 1], alpha=0.15, color="blue",
+                                    transform=ccrs.PlateCarree())
+
+                    # Plot gauge location
+                    ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12, markeredgecolor='black',
+                                markeredgewidth=1, transform=ccrs.PlateCarree(),
+                                label=f"Gauge {gauge_id}", zorder=5)
+                else:
+                    ax_map.set_xlim(lon_min - lon_pad, lon_max + lon_pad)
+                    ax_map.set_ylim(lat_min - lat_pad, lat_max + lat_pad)
+                    for poly in all_polys:
+                        ax_map.plot(poly[:, 0], poly[:, 1], 'b-', linewidth=2)
+                        ax_map.fill(poly[:, 0], poly[:, 1], alpha=0.15, color="blue")
+                    ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12, markeredgecolor='black',
+                                markeredgewidth=1, label=f"Gauge {gauge_id}", zorder=5)
+                    ax_map.set_xlabel("Longitude")
+                    ax_map.set_ylabel("Latitude")
+            else:
+                if has_cartopy:
+                    ax_map.set_global()
+                    ax_map.coastlines()
+                    ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12,
+                                transform=ccrs.PlateCarree(), label=f"Gauge {gauge_id}")
+                else:
+                    ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12, label=f"Gauge {gauge_id}")
+        else:
+            # No polygon available, just show gauge location
+            if has_cartopy:
+                pad = 10
+                ax_map.set_extent([gauge_lon - pad, gauge_lon + pad,
+                                   gauge_lat - pad, gauge_lat + pad], crs=ccrs.PlateCarree())
+                ax_map.add_feature(cfeature.LAND, facecolor="lightgray", alpha=0.5)
+                ax_map.add_feature(cfeature.OCEAN, facecolor="lightblue", alpha=0.3)
+                ax_map.coastlines()
+                ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12,
+                            transform=ccrs.PlateCarree(), label=f"Gauge {gauge_id}")
+            else:
+                ax_map.plot(gauge_lon, gauge_lat, 'r^', markersize=12, label=f"Gauge {gauge_id}")
+
+        area_str = f", Area: {gauge_area:.0f} km²" if not np.isnan(gauge_area) else ""
+        ax_map.set_title(f"{basin_name} Basin ({river_name}){area_str}", fontsize=14, fontweight="bold")
+        ax_map.legend(loc="lower left", fontsize=9)
+
+        # --- Panel 2: Time series ---
+        ax_ts = fig.add_subplot(2, 1, 2)
+
+        has_data = False
+        if obs_monthly is not None:
+            ax_ts.plot(obs_monthly.index, obs_monthly.values, 'k-', linewidth=1.2,
+                       label="Observed", alpha=0.9)
+            has_data = True
+        if sim_monthly is not None:
+            ax_ts.plot(sim_monthly.index, sim_monthly.values, 'r-', linewidth=1.2,
+                       label="E3SM (MOSART)", alpha=0.8)
+            has_data = True
+
+        if not has_data:
+            # Try plotting daily obs if available
+            if obs_ts is not None:
+                ax_ts.plot(obs_ts.index, obs_ts.values, 'k-', linewidth=0.5,
+                           label="Observed (daily)", alpha=0.7)
+
+        ax_ts.set_xlabel("Date", fontsize=12)
+        ax_ts.set_ylabel("Discharge (m³/s)", fontsize=12)
+
+        # Add metrics annotation
+        matching_metrics = [m for m in metrics_all if m["gauge_id"] == gauge_id]
+        if matching_metrics:
+            m = matching_metrics[-1]
+            metrics_text = (f"RMSE = {m['RMSE']:.1f} m³/s\n"
+                            f"NSE = {m['NSE']:.3f}\n"
+                            f"KGE = {m['KGE']:.3f}\n"
+                            f"PBIAS = {m['PBIAS']:.1f}%")
+            ax_ts.text(0.02, 0.97, metrics_text, transform=ax_ts.transAxes,
+                       fontsize=10, verticalalignment="top",
+                       bbox=dict(boxstyle="round,pad=0.4", facecolor="wheat", alpha=0.8))
+
+        ax_ts.set_title(f"Simulated vs Observed Monthly Discharge ({year_start}–{year_end})",
+                        fontsize=13)
+        ax_ts.legend(loc="upper right", fontsize=10)
+        ax_ts.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax_ts.xaxis.set_major_locator(mdates.YearLocator())
+        ax_ts.tick_params(axis="x", rotation=30)
+        ax_ts.grid(True, alpha=0.3)
+        ax_ts.set_xlim(pd.Timestamp(f"{year_start}-01-01"), pd.Timestamp(f"{year_end}-12-31"))
+
+        plt.tight_layout()
+        fig_path = os.path.join(output_dir, f"{basin_name.lower()}_streamflow_{gauge_id}.png")
+        plt.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved figure: {fig_path}")
+
+    except Exception as e:
+        print(f"  Error creating figure for {basin_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        plt.close("all")
+
+# ── Save metrics summary ──────────────────────────────────────────────────
+try:
+    if metrics_all:
+        metrics_df = pd.DataFrame(metrics_all)
+        csv_path = os.path.join(output_dir, "basin_streamflow_metrics.csv")
+        metrics_df.to_csv(csv_path, index=False, float_format="%.4f")
+        print(f"\nSaved metrics to: {csv_path}")
+        print("\n" + "=" * 80)
+        print("VALIDATION METRICS SUMMARY")
+        print("=" * 80)
+        print(metrics_df.to_string(index=False))
+        print("=" * 80)
+    else:
+        print("\nNo metrics computed. Check data availability.")
+except Exception as e:
+    print(f"Error saving metrics: {e}")
+
+# ── Save combined time series as NetCDF ────────────────────────────────────
+try:
+    ts_datasets = {}
+    for basin_name, gauge_id in basin_gauges.items():
+        obs_file = os.path.join(obs_dir, f"{gauge_id}.csv")
+        if os.path.exists(obs_file):
+            obs_df = pd.read_csv(obs_file, parse_dates=["date"])
+            obs_df = obs_df[(obs_df["date"] >= f"{year_start}-01-01") &
+                            (obs_df["date"] <= f"{year_end}-12-31")]
+            if len(obs_df) > 0:
+                obs_monthly_save = obs_df.set_index("date")["discharge_m3s"].resample("MS").mean()
+                ts_datasets[f"{basin_name}_obs"] = obs_monthly_save
+
+    if ts_datasets:
+        combined_df = pd.DataFrame(ts_datasets)
+        combined_df.index.name = "time"
+        ds_out = xr.Dataset.from_dataframe(combined_df)
+        nc_path = os.path.join(output_dir, "basin_streamflow_timeseries.nc")
+        ds_out.to_netcdf(nc_path)
+        print(f"Saved time series NetCDF: {nc_path}")
+except Exception as e:
+    print(f"Error saving time series NetCDF: {e}")
+
+# ── Create summary comparison figure ──────────────────────────────────────
+try:
+    if metrics_all:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+        basins = [m["basin"] for m in metrics_all]
+        rmse_vals = [m["RMSE"] for m in metrics_all]
+        nse_vals = [m["NSE"] for m in metrics_all]
+        kge_vals = [m["KGE"] for m in metrics_all]
+        pbias_vals = [m["PBIAS"] for m in metrics_all]
+
+        colors = plt.cm.Set2(np.linspace(0, 1, len(basins)))
+
+        axes[0, 0].bar(basins, rmse_vals, color=colors, edgecolor="black")
+        axes[0, 0].set_title("RMSE (m³/s)", fontsize=13, fontweight="bold")
+        axes[0, 0].tick_params(axis="x", rotation=30)
+        axes[0, 0].grid(axis="y", alpha=0.3)
+
+        bars = axes[0, 1].bar(basins, nse_vals, color=colors, edgecolor="black")
+        axes[0, 1].axhline(y=0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+        axes[0, 1].set_title("NSE", fontsize=13, fontweight="bold")
+        axes[0, 1].tick_params(axis="x", rotation=30)
+        axes[0, 1].grid(axis="y", alpha=0.3)
+
+        axes[1, 0].bar(basins, kge_vals, color=colors, edgecolor="black")
+        axes[1, 0].axhline(y=0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+        axes[1, 0].set_title("KGE", fontsize=13, fontweight="bold")
+        axes[1, 0].tick_params(axis="x", rotation=30)
+        axes[1, 0].grid(axis="y", alpha=0.3)
+
+        axes[1, 1].bar(basins, pbias_vals, color=colors, edgecolor="black")
+        axes[1, 1].axhline(y=0, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+        axes[1, 1].set_title("PBIAS (%)", fontsize=13, fontweight="bold")
+        axes[1, 1].tick_params(axis="x", rotation=30)
+        axes[1, 1].grid(axis="y", alpha=0.3)
+
+        fig.suptitle(f"E3SM MOSART Streamflow Validation ({year_start}–{year_end})",
+                     fontsize=15, fontweight="bold", y=1.01)
+        plt.tight_layout()
+        summary_path = os.path.join(output_dir, "basin_streamflow_metrics_summary.png")
+        plt.savefig(summary_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved summary figure: {summary_path}")
+except Exception as e:
+    print(f"Error creating summary figure: {e}")
+    plt.close("all")
+
+print(f"\nAll outputs saved to: {output_dir}")
+print("Done.")

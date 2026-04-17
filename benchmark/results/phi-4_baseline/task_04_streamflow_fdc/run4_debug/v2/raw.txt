@@ -1,0 +1,152 @@
+```python
+import os
+import glob
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+from scipy.stats import wasserstein_distance
+import cartopy.crs as ccrs
+
+# Define paths and case name
+data_dir = "./data/sample/e3sm/"
+obs_dir = "./data/sample/obs/streamflow/"
+gauge_metadata_path = "./data/sample/obs/gauge_metadata.csv"
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_baseline/task_04_streamflow_fdc/run4_output"
+
+# Create output directory if it doesn't exist
+os.makedirs(output_dir, exist_ok=True)
+
+# Load gauge metadata and ensure 'grdc_no' column exists
+try:
+    gauge_metadata = pd.read_csv(gauge_metadata_path)
+except FileNotFoundError as e:
+    raise FileNotFoundError(f"Metadata file not found: {e}")
+
+if 'grdc_no' not in gauge_metadata.columns:
+    print("Column 'grdc_no' is missing from the gauge metadata CSV. Please check your data.")
+else:
+    selected_gauges = gauge_metadata[gauge_metadata['grdc_no'].isin([3629000, 4121801, 4115200, 6742900, 2969100, 1159100])]
+
+def load_mosart_discharge(case_name, start_year=1985, end_year=1989):
+    discharge_data = {}
+    for year in range(start_year, end_year + 1):
+        daily_file_pattern = f"{data_dir}rof/{case_name}.mosart.h1.{year}-*.nc"
+        files = sorted(glob.glob(daily_file_pattern))
+        if not files:
+            continue
+        ds_daily = xr.open_mfdataset(files, combine='by_coords')
+        discharge_data[year] = ds_daily['RIVER_DISCHARGE_OVER_LAND_LIQ'].to_dataframe()
+    return pd.concat(discharge_data.values())
+
+def load_observation(gauge_id):
+    obs_path = os.path.join(obs_dir, f"{gauge_id}.csv")
+    try:
+        obs_df = pd.read_csv(obs_path, parse_dates=['date'], index_col='date')
+        return obs_df['discharge_m3s']
+    except Exception as e:
+        print(f"Error loading observation for gauge {gauge_id}: {e}")
+        return None
+
+def match_gauge_to_grid(lat, lon, ds):
+    grid_lat = ds['lat'].values
+    grid_lon = ds['lon'].values
+    idx = np.unravel_index(np.argmin((grid_lat[:, None] - lat)**2 + (grid_lon[None, :] - lon)**2), grid_lat.shape)
+    return idx
+
+def compute_fdc_metrics(simulated, observed):
+    # Sort data for FDC
+    simulated_sorted = np.sort(simulated.values.flatten())
+    observed_sorted = np.sort(observed.values.flatten())
+
+    # Compute volume bias
+    volume_bias = np.sum(simulated) / np.sum(observed)
+
+    # Compute Wasserstein distance
+    wasserstein_dist = wasserstein_distance(simulated_sorted, observed_sorted)
+
+    # Quantile ratios
+    q10_sim, q50_sim, q90_sim = np.percentile(simulated_sorted, [10, 50, 90])
+    q10_obs, q50_obs, q90_obs = np.percentile(observed_sorted, [10, 50, 90])
+
+    quantile_ratios = {
+        'Q10': q10_sim / q10_obs,
+        'Q50': q50_sim / q50_obs,
+        'Q90': q90_sim / q90_obs
+    }
+
+    return volume_bias, wasserstein_dist, quantile_ratios
+
+def plot_fdc_comparison(simulated, observed, gauge_id):
+    plt.figure(figsize=(12, 6))
+    plt.plot(np.linspace(0, 100, len(simulated)), np.percentile(simulated, np.arange(0, 101), axis=None),
+             label='Simulated', color='blue')
+    plt.plot(np.linspace(0, 100, len(observed)), np.percentile(observed, np.arange(0, 101), axis=None),
+             label='Observed', color='red')
+    plt.xlabel('Exceedance Probability (%)')
+    plt.ylabel('Discharge (m³/s)')
+    plt.title(f'Flow Duration Curve for Gauge {gauge_id}')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(output_dir, f'fdc_{gauge_id}.png'))
+    plt.close()
+
+def main():
+    if 'selected_gauges' in locals():
+        case_name = "sample.v3.LR.historical"
+        mosart_discharge = load_mosart_discharge(case_name)
+
+        metrics_df = pd.DataFrame(columns=['Gauge ID', 'Volume Bias', 'Wasserstein Distance', 'Q10 Ratio', 'Q50 Ratio', 'Q90 Ratio'])
+
+        for _, gauge in selected_gauges.iterrows():
+            gauge_id, lat, lon = gauge['grdc_no'], gauge['lat'], gauge['lon']
+            obs_discharge = load_observation(gauge_id)
+            
+            if obs_discharge is None:
+                continue
+
+            # Match gauge to MOSART grid
+            idx = match_gauge_to_grid(lat, lon, mosart_discharge)
+
+            # Extract simulated discharge for the matched grid cell
+            sim_discharge = mosart_discharge.iloc[:, idx[0], idx[1]]
+
+            # Align time indices
+            common_index = obs_discharge.index.intersection(sim_discharge.index)
+            obs_aligned = obs_discharge.loc[common_index]
+            sim_aligned = sim_discharge.loc[common_index]
+
+            # Compute FDC metrics
+            volume_bias, wasserstein_dist, quantile_ratios = compute_fdc_metrics(sim_aligned, obs_aligned)
+
+            # Append to metrics DataFrame
+            metrics_df = metrics_df.append({
+                'Gauge ID': gauge_id,
+                'Volume Bias': volume_bias,
+                'Wasserstein Distance': wasserstein_dist,
+                'Q10 Ratio': quantile_ratios['Q10'],
+                'Q50 Ratio': quantile_ratios['Q50'],
+                'Q90 Ratio': quantile_ratios['Q90']
+            }, ignore_index=True)
+
+            # Plot FDC comparison
+            plot_fdc_comparison(sim_aligned, obs_aligned, gauge_id)
+
+        # Save metrics to CSV
+        metrics_df.to_csv(os.path.join(output_dir, 'gauge_metrics.csv'), index=False)
+
+        # Plot Wasserstein distance on map
+        plt.figure(figsize=(10, 6))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        ax.coastlines()
+        scatter = ax.scatter(selected_gauges['lon'], selected_gauges['lat'],
+                             c=metrics_df['Wasserstein Distance'], cmap='viridis', s=100,
+                             transform=ccrs.Geodetic(), edgecolor='k')
+        plt.colorbar(scatter, label='Wasserstein Distance')
+        plt.title('Wasserstein Distance for Selected Gauges')
+        plt.savefig(os.path.join(output_dir, 'wasserstein_map.png'))
+        plt.close()
+
+if __name__ == "__main__":
+    main()
+```

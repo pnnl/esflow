@@ -21,7 +21,7 @@ import cartopy.feature as cfeature
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
 
 SPEC = ToolSpec(
@@ -123,7 +123,7 @@ def _plot_basin_map(ax, basin, gauge_lon, gauge_lat):
     gl.right_labels = False
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     basins_file = config['basins_file']
     sim_file = config['sim_file']

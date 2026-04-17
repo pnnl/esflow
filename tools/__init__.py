@@ -1,5 +1,5 @@
 """
-ESFlow Analysis Tools
+ESMFlow Analysis Tools
 
 Modular tools for analyzing Earth System Model output.
 Tools are designed to be chained together via YAML workflow files.

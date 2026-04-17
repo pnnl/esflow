@@ -14,7 +14,7 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 import pandas as pd
 
@@ -47,7 +47,7 @@ def _regrid_nearest(source, target_lat, target_lon):
     return source.interp(lat=target_lat, lon=target_lon, method='nearest')
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     field_a_path = config['field_a']
     field_b_path = config['field_b']

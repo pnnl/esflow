@@ -18,7 +18,7 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 
 UNIT_LOOKUP = {
@@ -112,7 +112,7 @@ def _load_field(path):
     return ds['lat'].values, ds['lon'].values, field.values, vname, field.attrs.get('units', ''), time_range, ds
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     obs_file = config['obs_file']
     sim_file = config['sim_file']

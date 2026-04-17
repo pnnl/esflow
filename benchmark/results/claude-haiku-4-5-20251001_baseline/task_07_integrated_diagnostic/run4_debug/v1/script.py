@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""
+Per-basin integrated water cycle evaluation for E3SM over 1985-1989.
+Diagnoses model biases across six major river basins.
+"""
+
+import os
+import sys
+import warnings
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import Polygon as MplPolygon
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from scipy.stats import gaussian_kde
+import json
+import glob
+from datetime import datetime
+import urllib.request
+import shutil
+
+warnings.filterwarnings('ignore')
+
+# Configuration
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_07_integrated_diagnostic/run4_debug/v1/output"
+DATA_DIR = "./data/sample"
+E3SM_DIR = os.path.join(DATA_DIR, "e3sm")
+OBS_DIR = os.path.join(DATA_DIR, "obs")
+CASE_NAME = "sample.v3.LR.historical"
+
+# Basin metadata: gauge_id -> basin name
+BASINS = {
+    3629000: "Amazon",
+    4121801: "Missouri",
+    4115200: "Columbia",
+    6742900: "Danube",
+    2969100: "Mekong",
+    1159100: "Orange"
+}
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def log_message(msg):
+    """Print timestamped log message."""
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+
+def download_ilamb_data(variable, dataset, filename):
+    """Download ILAMB observation data."""
+    url = f"https://www.ilamb.org/ILAMB-Data/DATA/{variable}/{dataset}/{filename}"
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    
+    if os.path.exists(output_path):
+        log_message(f"File already exists: {output_path}")
+        return output_path
+    
+    try:
+        log_message(f"Downloading {url}...")
+        urllib.request.urlretrieve(url, output_path)
+        log_message(f"Downloaded to {output_path}")
+        return output_path
+    except Exception as e:
+        log_message(f"Error downloading {url}: {e}")
+        return None
+
+def load_elm_data(start_year=1985, end_year=1989):
+    """Load ELM monthly data and compute climatological means."""
+    log_message("Loading ELM data...")
+    
+    elm_files = []
+    for year in range(start_year, end_year + 1):
+        for month in range(1, 13):
+            pattern = os.path.join(E3SM_DIR, "lnd", f"{CASE_NAME}.elm.h0.{year:04d}-{month:02d}.nc")
+            files = glob.glob(pattern)
+            elm_files.extend(files)
+    
+    if not elm_files:
+        log_message(f"No ELM files found matching pattern")
+        return None
+    
+    elm_files.sort()
+    log_message(f"Found {len(elm_files)} ELM files")
+    
+    try:
+        ds = xr.open_mfdataset(elm_files, combine='by_coords', parallel=False)
+        
+        # Extract variables
+        precip = (ds['RAIN'] + ds['SNOW']) * 86400  # Convert kg/m2/s to mm/day
+        et = (ds['QVEGE'] + ds['QVEGT'] + ds['QSOIL']) * 1000  # Convert mm/s to mm/day
+        runoff = ds['QRUNOFF'] * 1000  # Convert mm/s to mm/day
+        
+        # Compute climatological means
+        precip_mean = precip.mean(dim='time')
+        et_mean = et.mean(dim='time')
+        runoff_mean = runoff.mean(dim='time')
+        
+        log_message(f"ELM data loaded: precip shape {precip_mean.shape}")
+        
+        return {
+            'precip': precip_mean,
+            'et': et_mean,
+            'runoff': runoff_mean,
+            'ds': ds
+        }
+    except Exception as e:
+        log_message(f"Error loading ELM data: {e}")
+        return None
+
+def load_obs_data():
+    """Load and process ILAMB observation data."""
+    log_message("Loading observation data...")
+    
+    obs_data = {}
+    
+    # Download GPCC precipitation
+    pr_file = download_ilamb_data("pr", "GPCCv2018", "pr.nc")
+    if pr_file and os.path.exists(pr_file):
+        try:
+            ds_pr = xr.open_dataset(pr_file)
+            pr = ds_pr['pr'].mean(dim='time')  # mm/day
+            obs_data['precip'] = pr
+            log_message(f"GPCC precip loaded: shape {pr.shape}")
+        except Exception as e:
+            log_message(f"Error loading GPCC: {e}")
+    
+    # Download MODIS ET
+    et_file = download_ilamb_data("evspsbl", "MODIS", "et_0.5x0.5.nc")
+    if et_file and os.path.exists(et_file):
+        try:
+            ds_et = xr.open_dataset(et_file)
+            et = ds_et['et'].mean(dim='time')  # mm/day
+            obs_data['et'] = et
+            log_message(f"MODIS ET loaded: shape {et.shape}")
+        except Exception as e:
+            log_message(f"Error loading MODIS ET: {e}")
+    
+    # Download LORA runoff
+    runoff_file = download_ilamb_data("mrro", "LORA", "LORA.nc")
+    if runoff_file and os.path.exists(runoff_file):
+        try:
+            ds_runoff = xr.open_dataset(runoff_file)
+            runoff = ds_runoff['mrro'].mean(dim='time')  # mm/day
+            obs_data['runoff'] = runoff
+            log_message(f"LORA runoff loaded: shape {runoff.shape}")
+        except Exception as e:
+            log_message(f"Error loading LORA: {e}")
+    
+    return obs_data
+
+def load_basin_polygons():
+    """Load basin polygons from GeoJSON."""
+    log_message("Loading basin polygons...")
+    
+    geojson_path = os.path.join(OBS_DIR, "basin_polygons.geojson")
+    
+    try:
+        with open(geojson_path, 'r') as f:
+            geojson_data = json.load(f)
+        
+        basins_geom = {}
+        for feature in geojson_data['features']:
+            gauge_id = feature['properties'].get('grdc_no')
+            if gauge_id in BASINS:
+                basins_geom[gauge_id] = feature['geometry']
+        
+        log_message(f"Loaded {len(basins_geom)} basin polygons")
+        return basins_geom
+    except Exception as e:
+        log_message(f"Error loading basin polygons: {e}")
+        return {}
+
+def clip_to_basin(data, basin_geom):
+    """Clip gridded data to basin polygon and compute mean."""
+    try:
+        if data is None or basin_geom is None:
+            return np.nan
+        
+        # Get coordinates
+        if 'lon' in data.coords and 'lat' in data.coords:
+            lons = data.coords['lon'].values
+            lats = data.coords['lat'].values
+        else:
+            return np.nan
+        
+        # Handle 0-360 longitude convention
+        if lons.max() > 180:
+            lons = np.where(lons > 180, lons - 360, lons)
+        
+        # Create 2D coordinate grids
+        if len(lons.shape) == 1 and len(lats.shape) == 1:
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+        else:
+            lon_grid, lat_grid = lons, lats
+        
+        # Extract polygon coordinates
+        if basin_geom['type'] == 'Polygon':
+            coords = basin_geom['coordinates'][0]
+        elif basin_geom['type'] == 'MultiPolygon':
+            coords = basin_geom['coordinates'][0][0]
+        else:
+            return np.nan
+        
+        poly_lons = np.array([c[0] for c in coords])
+        poly_lats = np.array([c[1] for c in coords])
+        
+        # Point-in-polygon test
+        from matplotlib.path import Path
+        poly_path = Path(np.column_stack([poly_lons, poly_lats]))
+        points = np.column_stack([lon_grid.ravel(), lat_grid.ravel()])
+        mask = poly_path.contains_points(points).reshape(lon_grid.shape)
+        
+        # Compute basin mean
+        data_values = data.values
+        if np.any(mask):
+            basin_mean = np.nanmean(data_values[mask])
+            return basin_mean
+        else:
+            return np.nan
+    except Exception as e:
+        log_message(f"Error clipping to basin: {e}")
+        return np.nan
+
+def load_gauge_metadata():
+    """Load gauge metadata."""
+    log_message("Loading gauge metadata...")
+    
+    try:
+        metadata_path = os.path.join(OBS_DIR, "gauge_metadata.csv")
+        df = pd.read_csv(metadata_path)
+        return df
+    except Exception as e:
+        log_message(f"Error loading gauge metadata: {e}")
+        return pd.DataFrame()
+
+def load_mosart_data(start_year=1985, end_year=1989):
+    """Load MOSART monthly discharge data."""
+    log_message("Loading MOSART data...")
+    
+    mosart_files = []
+    for year in range(start_year, end_year + 1):
+        for month in range(1, 13):
+            pattern = os.path.join(E3SM_DIR, "rof", f"{CASE_NAME}.mosart.h0.{year:04d}-{month:02d}.nc")
+            files = glob.glob(pattern)
+            mosart_files.extend(files)
+    
+    if not mosart_files:
+        log_message(f"No MOSART files found")
+        return None
+    
+    mosart_files.sort()
+    log_message(f"Found {len(mosart_files)} MOSART files")
+    
+    try:
+        ds = xr.open_mfdataset(mosart_files, combine='by_coords', parallel=False)
+        discharge = ds['RIVER_DISCHARGE_OVER_LAND_LIQ']
+        log_message(f"MOSART data loaded: shape {discharge.shape}")
+        return discharge
+    except Exception as e:
+        log_message(f"Error loading MOSART data: {e}")
+        return None
+
+def find_nearest_mosart_cell(lat, lon, mosart_ds):
+    """Find nearest MOSART grid cell to gauge location."""
+    try:
+        if 'lat' not in mosart_ds.coords or 'lon' not in mosart_ds.coords:
+            return None
+        
+        mosart_lats = mosart_ds.coords['lat'].values
+        mosart_lons = mosart_ds.coords['lon'].values
+        
+        # Handle 0-360 convention
+        if mosart_lons.max() > 180:
+            mosart_lons = np.where(mosart_lons > 180, mosart_lons - 360, mosart_lons)
+        
+        # Find nearest cell
+        if len(mosart_lats.shape) == 1 and len(mosart_lons.shape) == 1:
+            lat_idx = np.argmin(np.abs(mosart_lats - lat))
+            lon_idx = np.argmin(np.abs(mosart_lons - lon))
+        else:
+            dist = np.sqrt((mosart_lats - lat)**2 + (mosart_lons - lon)**2)
+            idx = np.unravel_index(np.argmin(dist), dist.shape)
+            lat_idx, lon_idx = idx
+        
+        return (lat_idx, lon_idx)
+    except Exception as e:
+        log_message(f"Error finding nearest MOSART cell: {e}")
+        return None
+
+def load_gauge_discharge(gauge_id):
+    """Load observed discharge for a gauge."""
+    try:
+        csv_path = os.path.join(OBS_DIR, "streamflow", f"{gauge_id}.csv")
+        if not os.path.exists(csv_path):
+            return None
+        
+        df = pd.read_csv(csv_path)
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Filter to 1985-1989
+        df = df[(df['date'].dt.year >= 1985) & (df['date'].dt.year <= 1989)]
+        
+        return df
+    except Exception as e:
+        log_message(f"Error loading gauge discharge for {gauge_id}: {e}")
+        return None
+
+def compute_wasserstein_distance(x, y):
+    """Compute Wasserstein distance between two 1D distributions."""
+    try:
+        # Sort both arrays
+        x_sorted = np.sort(x)
+        y_sorted = np.sort(y)
+        
+        # Interpolate to same length
+        n = max(len(x_sorted), len(y_sorted))
+        x_interp = np.interp(np.linspace(0, 1, n), np.linspace(0, 1, len(x_sorted)), x_sorted)
+        y_interp = np.interp(np.linspace(0, 1, n), np.linspace(0, 1, len(y_sorted)), y_sorted)
+        
+        # Compute L1 distance
+        distance = np.mean(np.abs(x_interp - y_interp))
+        return distance
+    except Exception as e:
+        log_message(f"Error computing Wasserstein distance: {e}")
+        return np.nan
+
+def compute_fdc_metrics(obs_discharge, sim_discharge):
+    """Compute flow duration curve metrics."""
+    try:
+        # Remove NaN values
+        obs_valid = obs_discharge[~np.isnan(obs_discharge)]
+        sim_valid = sim_discharge[~np.isnan(sim_discharge)]
+        
+        if len(obs_valid) == 0 or len(sim_valid) == 0:
+            return {'volume_bias': np.nan, 'wasserstein': np.nan}
+        
+        # Volume bias
+        volume_bias = (np.mean(sim_valid) - np.mean(obs_valid)) / np.mean(obs_valid) * 100
+        
+        # Wasserstein distance (normalized)
+        wasserstein = compute_wasserstein_distance(obs_valid, sim_valid)
+        wasserstein_norm = wasserstein / np.mean(obs_valid) * 100
+        
+        return {
+            'volume_bias': volume_bias,
+            'wasserstein': wasserstein_norm
+        }
+    except Exception as e:
+        log_message(f"Error computing FDC metrics: {e}")
+        return {'volume_bias': np.nan, 'wasserstein': np.nan}
+
+def main():
+    """Main analysis workflow."""
+    log_message("Starting per-basin integrated water cycle evaluation...")
+    
+    # Part 1: Extract model fields
+    elm_data = load_elm_data()
+    if elm_data is None:
+        log_message("Failed to load ELM data")
+        return
+    
+    # Part 2: Fetch and extract observation fields
+    obs_data = load_obs_data()
+    
+    # Part 3: Load basin polygons
+    basin_geoms = load_basin_polygons()
+    
+    # Part 4: Load MOSART and gauge data
+    mosart_discharge = load_mosart_data()
+    gauge_metadata = load_gauge_metadata()
+    
+    # Compute per-basin metrics
+    basin_metrics = []
+    
+    for gauge_id, basin_name in BASINS.items():
+        log_message(f"Processing basin: {basin_name} (gauge {gauge_id})")
+        
+        metrics = {'gauge_id': gauge_id, 'basin': basin_name}
+        
+        # Get basin polygon
+        if gauge_id in basin_geoms:
+            basin_geom = basin_geoms[gauge_id]
+            
+            # Clip model fields to basin
+            if elm_data['precip'] is not None:
+                metrics['model_precip'] = clip_to_basin(elm_data['precip'], basin_geom)
+            if elm_data['et'] is not None:
+                metrics['model_et'] = clip_to_basin(elm_data['et'], basin_geom)
+            if elm_data['runoff'] is not None:
+                metrics['model_runoff'] = clip_to_basin(elm_data['runoff'], basin_geom)
+            
+            # Clip observation fields to basin
+            if 'precip' in obs_data:
+                metrics['obs_precip'] = clip_to_basin(obs_data['precip'], basin_geom)
+            if 'et' in obs_data:
+                metrics['obs_et'] = clip_to_basin(obs_data['et'], basin_geom)
+            if 'runoff' in obs_data:
+                metrics['obs_runoff'] = clip_to_basin(obs_data['runoff'], basin_geom)
+        
+        # Compute biases
+        if 'model_precip' in metrics and 'obs_precip' in metrics:
+            if not np.isnan(metrics['model_precip']) and not np.isnan(metrics['obs_precip']):
+                metrics['precip_bias'] = (metrics['model_precip'] - metrics['obs_precip']) / metrics['obs_precip'] * 100
+        
+        if 'model_et' in metrics and 'obs_et' in metrics:
+            if not np.isnan(metrics['model_et']) and not np.isnan(metrics['obs_et']):
+                metrics['et_bias'] = (metrics['model_et'] - metrics['obs_et']) / metrics['obs_et'] * 100
+        
+        if 'model_runoff' in metrics and 'obs_runoff' in metrics:
+            if not np.isnan(metrics['model_runoff']) and not np.isnan(metrics['obs_runoff']):
+                metrics['runoff_bias'] = (metrics['model_runoff'] - metrics['obs_runoff']) / metrics['obs_runoff'] * 100
+        
+        # Water balance residual
+        if 'model_precip' in metrics and 'model_et' in metrics and 'model_runoff' in metrics:
+            if not np.isnan(metrics['model_precip']) and not np.isnan(metrics['model_et']) and not np.isnan(metrics['model_runoff']):
+                metrics['water_balance_residual'] = metrics['model_precip'] - metrics['model_et'] - metrics['model_runoff']
+        
+        # Streamflow metrics
+        if gauge_id in gauge_metadata['gauge_id'].values and mosart_discharge is not None:
+            gauge_row = gauge_metadata[gauge_metadata['gauge_id'] == gauge_id].iloc[0]
+            gauge_lat = gauge_row['lat']
+            gauge_lon = gauge_row['lon']
+            
+            # Find nearest MOSART cell
+            cell_idx = find_nearest_mosart_cell(gauge_lat, gauge_lon, mosart_discharge)
+            if cell_idx is not None:
+                lat_idx, lon_idx = cell_idx
+                sim_discharge = mosart_discharge.isel(lat=lat_idx, lon=lon_idx).values
+                
+                # Load observed discharge
+                obs_df = load_gauge_discharge(gauge_id)
+                if obs_df is not None and len(obs_df) > 0:
+                    obs_discharge = obs_df['discharge_m3s'].values
+                    
+                    # Compute FDC metrics
+                    fdc_metrics = compute_fdc_metrics(obs_discharge, sim_discharge)
+                    metrics.update(fdc_metrics)
+                    
+                    # Volume bias for streamflow
+                    metrics['streamflow_volume_bias'] = fdc_metrics['volume_bias']
+        
+        basin_metrics.append(metrics)
+    
+    # Part 5: Create summary table
+    summary_df = pd.DataFrame(basin_metrics)
+    summary_path = os.path.join(OUTPUT_DIR, "basin_metrics_summary.csv")
+    summary_df.to_csv(summary_path, index=False)
+    log_message(f"Summary table saved to {summary_path}")
+    
+    # Create visualizations
+    try:
+        create_model_vs_obs_chart(summary_df)
+    except Exception as e:
+        log_message(f"Error creating model vs obs chart: {e}")
+    
+    try:
+        create_radar_chart(summary_df)
+    except Exception as e:
+        log_message(f"Error creating radar chart: {e}")
+    
+    log_message("Analysis complete!")
+
+def create_model_vs_obs_chart(summary_df):
+    """Create model vs observation bar chart."""
+    log_message("Creating model vs observation chart...")
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    variables = ['precip', 'et', 'runoff']
+    titles = ['Precipitation (mm/day)', 'Evapotranspiration (mm/day)', 'Runoff (mm/day)']
+    
+    for ax, var, title in zip(axes, variables, titles):
+        model_col = f'model_{var}'
+        obs_col = f'obs_{var}'
+        
+        if model_col in summary_df.columns and obs_col in summary_df.columns:
+            x = np.arange(len(summary_df))
+            width = 0.35
+            
+            model_vals = summary_df[model_col].values
+            obs_vals = summary_df[obs_col].values
+            
+            ax.bar(x - width/2, model_vals, width, label='E3SM', alpha=0.8)
+            ax.bar(x + width/2, obs_vals, width, label='Observations', alpha=0.8)
+            
+            ax.set_xlabel('Basin')
+            ax.set_ylabel(title)
+            ax.set_title(title)
+            ax.set_xticks(x)
+            ax.set_xticklabels(summary_df['basin'], rotation=45, ha='right')
+            ax.legend()
+            ax.grid(axis='y', alpha=0.3)
+    
+    plt.tight_layout()
+    chart_path = os.path.join(OUTPUT_DIR, "model_vs_obs_chart.png")
+    plt.savefig(chart_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log_message(f"Model vs obs chart saved to {chart_path}")
+
+def create_radar_chart(summary_df):
+    """Create radar chart for multi-variable diagnostics."""
+    log_message("Creating radar chart...")
+    
+    # Normalize biases to 0-100 scale (0 = perfect, 100 = large error)
+    bias_cols = ['precip_bias', 'et_bias', 'runoff_bias']
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10), subplot_kw=dict(projection='polar'))
+    axes = axes.flatten()
+    
+    for idx, (_, row) in enumerate(summary_df.iterrows()):
+        ax = axes[idx]
+        
+        # Extract biases
+        biases = []
+        labels = []
+        for col in bias_cols:
+            if col in summary_df.columns and not np.isnan(row[col]):
+                # Convert to error metric (absolute value, capped at 100)
+                error = min(abs(row[col]), 100)
+                biases.append(error)
+                labels.append(col.replace('_bias', '').upper())
+        
+        if len(biases) > 0:
+            # Add streamflow metric if available
+            if 'streamflow_volume_bias' in summary_df.columns and not np.isnan(row['streamflow_volume_bias']):
+                error = min(abs(row['streamflow_volume_bias']), 100)
+                biases.append(error)
+                labels.append('STREAMFLOW')
+            
+            # Close the plot
+            biases.append(biases[0])
+            labels.append(labels[0])
+            
+            angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=True)
+            
+            ax.plot(angles, biases, 'o-', linewidth=2, label='Error')
+            ax.fill(angles, biases, alpha=0.25)
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(labels[:-1])
+            ax.set_ylim(0, 100)
+            ax.set_title(row['basin'], fontsize=12, fontweight='bold')
+            ax.grid(True)
+    
+    plt.tight_layout()
+    radar_path = os.path.join(OUTPUT_DIR, "radar_chart.png")
+    plt.savefig(radar_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log_message(f"Radar chart saved to {radar_path}")
+
+if __name__ == '__main__':
+    main()

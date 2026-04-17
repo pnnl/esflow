@@ -1,0 +1,39 @@
+
+name: "Observation Streamflow Summary Statistics"
+description: |
+  Load GRDC gauge metadata, extract monthly streamflow observations for six
+  major river gauges (Amazon, Missouri, Columbia, Danube, Mekong, Orange)
+  over 1985–1989, and compute summary statistics (mean, std, min, max) per gauge.
+
+settings:
+  obs_metadata: "./data/sample/obs/gauge_metadata.csv"
+  obs_streamflow_dir: "./data/sample/obs/streamflow/"
+  gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+  years: [1985, 1986, 1987, 1988, 1989]
+  output_dir: "./output/task01_obs_summary"
+
+steps:
+  - id: load_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.obs_metadata}"
+    outputs:
+      metadata_file: "${settings.output_dir}/gauge_metadata_validated.csv"
+
+  - id: extract_obs_streamflow
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.obs_streamflow_dir}"
+      gauge_metadata: "${load_metadata.outputs.metadata_file}"
+      years: ${settings.years}
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      timeseries_file: "${settings.output_dir}/obs_streamflow_timeseries.csv"
+
+  - id: compute_obs_summary
+    tool: compute_summary_stats
+    params:
+      timeseries_file: "${extract_obs_streamflow.outputs.timeseries_file}"
+      gauge_metadata: "${load_metadata.outputs.metadata_file}"
+    outputs:
+      stats_file: "${settings.output_dir}/obs_streamflow_summary_stats.csv"

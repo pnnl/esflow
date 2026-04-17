@@ -1,0 +1,207 @@
+import os
+import glob
+import numpy as np
+import pandas as pd
+import xarray as xr
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from scipy.stats import pearsonr
+
+def compute_metrics(sim, obs):
+    # remove nans
+    mask = np.isfinite(sim) & np.isfinite(obs)
+    sim_clean = sim[mask]
+    obs_clean = obs[mask]
+    if len(sim_clean) == 0:
+        return np.nan, np.nan, np.nan, np.nan
+    # RMSE
+    rmse = np.sqrt(np.mean((sim_clean - obs_clean)**2))
+    # NSE
+    denom = np.sum((obs_clean - np.mean(obs_clean))**2)
+    nse = 1.0 - np.sum((sim_clean - obs_clean)**2) / denom if denom != 0 else np.nan
+    # KGE
+    # correlation
+    if len(obs_clean) > 1:
+        r, _ = pearsonr(sim_clean, obs_clean)
+    else:
+        r = np.nan
+    alpha = np.std(sim_clean) / np.std(obs_clean) if np.std(obs_clean) != 0 else np.nan
+    beta = np.mean(sim_clean) / np.mean(obs_clean) if np.mean(obs_clean) != 0 else np.nan
+    kge = 1.0 - np.sqrt((r-1)**2 + (alpha-1)**2 + (beta-1)**2)
+    # PBIAS
+    pbias = 100.0 * np.sum(sim_clean - obs_clean) / np.sum(obs_clean) if np.sum(obs_clean) != 0 else np.nan
+    return rmse, nse, kge, pbias
+
+def main():
+    # Directories and settings
+    case_name = "sample.v3.LR.historical"
+    data_dir = "./data/sample/e3sm/rof"
+    obs_dir = "./data/sample/obs/streamflow"
+    gauge_meta_file = "./data/sample/obs/gauge_metadata.csv"
+    basin_geojson = "./data/sample/obs/basin_polygons.geojson"
+    output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_05_basin_streamflow/run2_output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Period
+    start = "1985-01-01"
+    end = "1989-12-31"
+
+    # Basins of interest
+    basins = {
+        3629000: "Amazon",
+        4121801: "Missouri",
+        4115200: "Columbia",
+        6742900: "Danube",
+        2969100: "Mekong",
+        1159100: "Orange"
+    }
+
+    # Load gauge metadata
+    try:
+        meta = pd.read_csv(gauge_meta_file, dtype={'gauge_id': str})
+    except Exception as e:
+        print(f"Error reading gauge metadata: {e}")
+        return
+
+    # Load basin polygons
+    try:
+        basins_gdf = gpd.read_file(basin_geojson)
+        basins_gdf['grdc_no'] = basins_gdf['grdc_no'].astype(str)
+    except Exception as e:
+        print(f"Error reading basin polygons: {e}")
+        return
+
+    # Load monthly MOSART h0 data for river discharge
+    pattern = os.path.join(data_dir, f"{case_name}.mosart.h0.*.nc")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        print("No MOSART h0 files found. Check the path and pattern.")
+        return
+    try:
+        ds = xr.open_mfdataset(files, concat_dim="time", combine="by_coords", decode_times=True)
+    except Exception as e:
+        print(f"Error opening MOSART dataset: {e}")
+        return
+
+    # Extract lat/lon of routing grid
+    try:
+        lats = ds['lat'].values
+        lons = ds['lon'].values
+    except Exception as e:
+        print(f"Error extracting lat/lon from MOSART dataset: {e}")
+        return
+
+    # Prepare results list
+    metrics_list = []
+
+    # Loop over each basin/gauge
+    for gid, basin_name in basins.items():
+        gid_str = str(gid)
+        print(f"Processing basin {basin_name} ({gid_str})")
+        try:
+            # get gauge metadata
+            gm = meta[meta['gauge_id'] == gid_str].iloc[0]
+            glat = gm['lat']
+            glon = gm['lon']
+            if glon < 0:
+                glon_mod = glon % 360
+            else:
+                glon_mod = glon
+
+            # find nearest MOSART grid cell
+            dist = np.sqrt((lats - glat)**2 + (lons - glon_mod)**2)
+            idx = int(np.nanargmin(dist))
+
+            # extract sim monthly series
+            sim_da = ds['RIVER_DISCHARGE_OVER_LAND_LIQ'].isel(mesh=idx)
+            sim_ts = pd.Series(sim_da.values, index=sim_da['time'].to_index())
+            sim_ts = sim_ts.loc[start:end]
+
+            # load observed daily and aggregate monthly mean
+            obs_file = os.path.join(obs_dir, f"{gid_str}.csv")
+            obs_df = pd.read_csv(obs_file, parse_dates=['date'])
+            obs_df = obs_df.set_index('date').sort_index()
+            obs_df = obs_df.loc[start:end]
+            obs_month = obs_df['discharge_m3s'].resample('MS').mean()
+
+            # align sim and obs
+            df = pd.DataFrame({'sim': sim_ts, 'obs': obs_month}).dropna()
+            sim_aligned = df['sim'].values
+            obs_aligned = df['obs'].values
+
+            # compute metrics
+            rmse, nse, kge, pbias = compute_metrics(sim_aligned, obs_aligned)
+            metrics_list.append({
+                'gauge_id': gid_str,
+                'basin': basin_name,
+                'rmse_m3s': rmse,
+                'nse': nse,
+                'kge': kge,
+                'pbias_pct': pbias
+            })
+
+            # save time series CSV
+            ts_out = df.copy()
+            ts_out.index.name = 'time'
+            ts_csv = os.path.join(output_dir, f"{gid_str}_{basin_name}_ts.csv")
+            try:
+                ts_out.to_csv(ts_csv)
+            except Exception as e:
+                print(f"Error saving TS CSV for {basin_name}: {e}")
+
+            # save individual metrics CSV
+            metric_csv = os.path.join(output_dir, f"{gid_str}_{basin_name}_metrics.csv")
+            try:
+                pd.DataFrame([metrics_list[-1]]).to_csv(metric_csv, index=False)
+            except Exception as e:
+                print(f"Error saving metrics CSV for {basin_name}: {e}")
+
+            # plot map and time series
+            try:
+                fig, axes = plt.subplots(1, 2, figsize=(14,6), subplot_kw={'projection': ccrs.PlateCarree()} if False else {})
+                # map
+                ax0 = plt.subplot(1,2,1, projection=ccrs.PlateCarree())
+                ax0.coastlines(resolution='50m')
+                poly = basins_gdf[basins_gdf['grdc_no'] == gid_str]
+                poly.plot(ax=ax0, facecolor='none', edgecolor='blue', linewidth=2, transform=ccrs.PlateCarree())
+                ax0.set_title(f"{basin_name} Basin")
+                # adjust extent
+                if not poly.empty:
+                    minx, miny, maxx, maxy = poly.total_bounds
+                    dx = (maxx - minx) * 0.1
+                    dy = (maxy - miny) * 0.1
+                    ax0.set_extent([minx-dx, maxx+dx, miny-dy, maxy+dy], crs=ccrs.PlateCarree())
+
+                # time series
+                ax1 = plt.subplot(1,2,2)
+                ax1.plot(df.index, df['obs'], label='Observed', color='black')
+                ax1.plot(df.index, df['sim'], label='Simulated', color='red')
+                ax1.set_title(f"{basin_name} Discharge 1985-1989")
+                ax1.set_xlabel("Time")
+                ax1.set_ylabel("Discharge (m3/s)")
+                ax1.legend()
+                # annotate metrics
+                txt = f"RMSE: {rmse:.2f}\nNSE: {nse:.2f}\nKGE: {kge:.2f}\nPBIAS: {pbias:.1f}%"
+                ax1.text(0.05, 0.95, txt, transform=ax1.transAxes, va='top', bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+
+                plt.tight_layout()
+                figfile = os.path.join(output_dir, f"{gid_str}_{basin_name}_plot.png")
+                fig.savefig(figfile, dpi=150)
+                plt.close(fig)
+            except Exception as e:
+                print(f"Error plotting for {basin_name}: {e}")
+
+        except Exception as e:
+            print(f"Error processing basin {basin_name} ({gid_str}): {e}")
+            continue
+
+    # save aggregated metrics
+    try:
+        metrics_df = pd.DataFrame(metrics_list)
+        metrics_df.to_csv(os.path.join(output_dir, "basin_streamflow_metrics.csv"), index=False)
+    except Exception as e:
+        print(f"Error saving aggregated metrics: {e}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,118 @@
+[
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run1_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run1_debug/v0",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run1_output/workflow.log"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run1_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "protocol",
+    "model": "phi-4",
+    "task": "task_01_obs_summary",
+    "run": 1
+  },
+  {
+    "status": "exhausted",
+    "rounds_used": 3,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v3",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v0",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_output/workflow.log"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v1",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v1/output/workflow.log"
+      },
+      {
+        "version": "v2",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v2",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v2/output/workflow.log"
+      },
+      {
+        "version": "v3",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v3",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run2_debug/v3/output/workflow.log"
+      }
+    ],
+    "mode": "protocol",
+    "model": "phi-4",
+    "task": "task_01_obs_summary",
+    "run": 2
+  },
+  {
+    "status": "fixed",
+    "rounds_used": 1,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run3_debug/v1",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run3_debug/v0",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run3_output/workflow.log"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run3_debug/v1",
+        "passed": true,
+        "error": null
+      }
+    ],
+    "mode": "protocol",
+    "model": "phi-4",
+    "task": "task_01_obs_summary",
+    "run": 3
+  },
+  {
+    "status": "exhausted",
+    "rounds_used": 3,
+    "final_dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v3",
+    "versions": [
+      {
+        "version": "v0",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v0",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_output/workflow.log"
+      },
+      {
+        "version": "v1",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v1",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v1/output/workflow.log"
+      },
+      {
+        "version": "v2",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v2",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v2/output/workflow.log"
+      },
+      {
+        "version": "v3",
+        "dir": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v3",
+        "passed": false,
+        "error": "Log: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run4_debug/v3/output/workflow.log"
+      }
+    ],
+    "mode": "protocol",
+    "model": "phi-4",
+    "task": "task_01_obs_summary",
+    "run": 4
+  }
+]

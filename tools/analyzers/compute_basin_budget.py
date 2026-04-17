@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 SPEC = ToolSpec(
     name='compute_basin_budget',
@@ -52,7 +52,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     output_dir = Path(config['output_dir'])
 

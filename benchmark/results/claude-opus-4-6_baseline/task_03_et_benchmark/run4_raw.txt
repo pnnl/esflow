@@ -1,0 +1,445 @@
+
+
+```python
+import os
+import sys
+import urllib.request
+import numpy as np
+import xarray as xr
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from scipy.interpolate import griddata
+import json
+
+# Output directory
+outdir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-opus-4-6_baseline/task_03_et_benchmark/run4_output"
+os.makedirs(outdir, exist_ok=True)
+
+# ============================================================
+# 1. Fetch MODIS ET dataset from ILAMB
+# ============================================================
+modis_url = "https://www.ilamb.org/ILAMB-Data/DATA/evspsbl/MODIS/et_0.5x0.5.nc"
+modis_local = os.path.join(outdir, "et_0.5x0.5.nc")
+
+try:
+    if not os.path.exists(modis_local):
+        print(f"Downloading MODIS ET from {modis_url} ...")
+        urllib.request.urlretrieve(modis_url, modis_local)
+        print("Download complete.")
+    else:
+        print("MODIS ET file already exists locally.")
+except Exception as e:
+    print(f"Error downloading MODIS ET: {e}")
+    sys.exit(1)
+
+# ============================================================
+# 2. Load E3SM ELM output for 1985-1989 and compute ET
+# ============================================================
+case_name = "sample.v3.LR.historical"
+elm_dir = "./data/sample/e3sm/lnd"
+years = range(1985, 1990)
+months = range(1, 13)
+
+elm_files = []
+for yr in years:
+    for mn in months:
+        fname = os.path.join(elm_dir, f"{case_name}.elm.h0.{yr:04d}-{mn:02d}.nc")
+        if os.path.exists(fname):
+            elm_files.append(fname)
+        else:
+            print(f"Warning: missing file {fname}")
+
+print(f"Found {len(elm_files)} ELM files for 1985-1989")
+
+try:
+    ds_elm = xr.open_mfdataset(elm_files, combine='by_coords', decode_times=True)
+    print(f"ELM dataset loaded: {list(ds_elm.dims)}")
+    print(f"ELM time range: {ds_elm.time.values[0]} to {ds_elm.time.values[-1]}")
+except Exception as e:
+    print(f"Error loading ELM data: {e}")
+    sys.exit(1)
+
+# Compute ET = QVEGE + QVEGT + QSOIL (all in mm/s)
+try:
+    qvege = ds_elm['QVEGE']
+    qvegt = ds_elm['QVEGT']
+    qsoil = ds_elm['QSOIL']
+    et_elm = qvege + qvegt + qsoil
+    et_elm.name = 'ET'
+    et_elm.attrs['units'] = 'mm/s'
+    et_elm.attrs['long_name'] = 'Evapotranspiration (QVEGE+QVEGT+QSOIL)'
+    print("E3SM ET computed (QVEGE + QVEGT + QSOIL)")
+except Exception as e:
+    print(f"Error computing E3SM ET: {e}")
+    sys.exit(1)
+
+# Compute time mean
+et_elm_mean = et_elm.mean(dim='time')
+# Convert from mm/s to kg/m2/s (they are the same numerically: 1 mm/s = 1 kg/m2/s)
+# For display, convert to mm/day: multiply by 86400
+et_elm_mean_mmday = et_elm_mean * 86400.0
+print(f"E3SM ET time-mean computed. Shape: {et_elm_mean.shape}")
+
+# Get E3SM lat/lon
+elm_lat = ds_elm['lat'].values
+elm_lon = ds_elm['lon'].values
+
+# Check dimensionality
+print(f"ELM lat shape: {elm_lat.shape}, lon shape: {elm_lon.shape}")
+
+# ============================================================
+# 3. Load MODIS ET observation and compute time mean
+# ============================================================
+try:
+    ds_modis = xr.open_dataset(modis_local)
+    print(f"MODIS dataset variables: {list(ds_modis.data_vars)}")
+    print(f"MODIS dataset coords: {list(ds_modis.coords)}")
+    print(f"MODIS dataset dims: {dict(ds_modis.dims)}")
+except Exception as e:
+    print(f"Error loading MODIS data: {e}")
+    sys.exit(1)
+
+# The variable inside is "et"
+try:
+    et_modis = ds_modis['et']
+    print(f"MODIS ET shape: {et_modis.shape}")
+    print(f"MODIS ET units: {et_modis.attrs.get('units', 'unknown')}")
+    if 'time' in et_modis.dims:
+        print(f"MODIS time range: {ds_modis.time.values[0]} to {ds_modis.time.values[-1]}")
+except Exception as e:
+    print(f"Error extracting MODIS ET variable: {e}")
+    sys.exit(1)
+
+# Compute time mean of MODIS ET
+if 'time' in et_modis.dims:
+    et_modis_mean = et_modis.mean(dim='time')
+else:
+    et_modis_mean = et_modis
+
+# Determine MODIS units and convert to mm/day if needed
+modis_units = et_modis.attrs.get('units', 'unknown')
+print(f"MODIS ET units: {modis_units}")
+
+# ILAMB MODIS ET is typically in kg/m2/s, same as mm/s
+# Convert to mm/day for comparison
+et_modis_mean_mmday = et_modis_mean * 86400.0
+
+# Get MODIS lat/lon
+# Check for different possible coordinate names
+for lat_name in ['lat', 'latitude', 'y']:
+    if lat_name in ds_modis.coords or lat_name in ds_modis.dims:
+        modis_lat = ds_modis[lat_name].values
+        break
+for lon_name in ['lon', 'longitude', 'x']:
+    if lon_name in ds_modis.coords or lon_name in ds_modis.dims:
+        modis_lon = ds_modis[lon_name].values
+        break
+
+print(f"MODIS lat range: {modis_lat.min():.1f} to {modis_lat.max():.1f}")
+print(f"MODIS lon range: {modis_lon.min():.1f} to {modis_lon.max():.1f}")
+
+# Handle 0-360 longitude convention -> convert to -180 to 180
+if modis_lon.max() > 180:
+    print("Converting MODIS lon from 0-360 to -180 to 180")
+    modis_lon_shifted = np.where(modis_lon > 180, modis_lon - 360, modis_lon)
+    sort_idx = np.argsort(modis_lon_shifted)
+    modis_lon = modis_lon_shifted[sort_idx]
+    et_modis_mean_mmday_vals = et_modis_mean_mmday.values
+    if et_modis_mean_mmday_vals.ndim == 2:
+        et_modis_mean_mmday_vals = et_modis_mean_mmday_vals[:, sort_idx]
+    et_modis_mean_mmday = xr.DataArray(
+        et_modis_mean_mmday_vals,
+        dims=['lat', 'lon'],
+        coords={'lat': modis_lat, 'lon': modis_lon}
+    )
+
+# ============================================================
+# 4. Regrid E3SM data to MODIS grid for comparison
+# ============================================================
+print("Regridding E3SM to MODIS grid...")
+
+try:
+    # Check if ELM data is on 1D or 2D grid
+    if elm_lat.ndim == 1 and elm_lon.ndim == 1:
+        # Regular grid case
+        elm_lon_vals = elm_lon.copy()
+        # Ensure ELM lon is also -180 to 180
+        if elm_lon_vals.max() > 180:
+            elm_lon_shifted = np.where(elm_lon_vals > 180, elm_lon_vals - 360, elm_lon_vals)
+            sort_idx_elm = np.argsort(elm_lon_shifted)
+            elm_lon_vals = elm_lon_shifted[sort_idx_elm]
+            elm_data = et_elm_mean_mmday.values[:, sort_idx_elm]
+        else:
+            elm_data = et_elm_mean_mmday.values
+
+        # Create xarray DataArray with proper coords for interpolation
+        et_elm_da = xr.DataArray(
+            elm_data,
+            dims=['lat', 'lon'],
+            coords={'lat': elm_lat, 'lon': elm_lon_vals}
+        )
+
+        # Interpolate to MODIS grid using xarray interp
+        et_elm_on_modis = et_elm_da.interp(lat=modis_lat, lon=modis_lon, method='linear')
+        print(f"Regridded E3SM ET shape: {et_elm_on_modis.shape}")
+    else:
+        # Unstructured grid - use scipy griddata
+        elm_lon_flat = elm_lon.ravel()
+        elm_lat_flat = elm_lat.ravel()
+        if elm_lon_flat.max() > 180:
+            elm_lon_flat = np.where(elm_lon_flat > 180, elm_lon_flat - 360, elm_lon_flat)
+        elm_data_flat = et_elm_mean_mmday.values.ravel()
+        
+        modis_lon_2d, modis_lat_2d = np.meshgrid(modis_lon, modis_lat)
+        et_elm_on_modis_vals = griddata(
+            (elm_lon_flat, elm_lat_flat), elm_data_flat,
+            (modis_lon_2d, modis_lat_2d), method='linear'
+        )
+        et_elm_on_modis = xr.DataArray(
+            et_elm_on_modis_vals,
+            dims=['lat', 'lon'],
+            coords={'lat': modis_lat, 'lon': modis_lon}
+        )
+        print(f"Regridded E3SM ET shape: {et_elm_on_modis.shape}")
+
+except Exception as e:
+    print(f"Error during regridding: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# ============================================================
+# 5. Compute bias = model - obs
+# ============================================================
+try:
+    # Get values as numpy arrays, ensure same shape
+    model_vals = et_elm_on_modis.values
+    obs_vals = et_modis_mean_mmday.values
+
+    # Ensure shapes match
+    assert model_vals.shape == obs_vals.shape, \
+        f"Shape mismatch: model {model_vals.shape} vs obs {obs_vals.shape}"
+
+    bias = model_vals - obs_vals
+
+    # Create bias DataArray
+    bias_da = xr.DataArray(
+        bias, dims=['lat', 'lon'],
+        coords={'lat': modis_lat, 'lon': modis_lon}
+    )
+    bias_da.name = 'ET_bias'
+    bias_da.attrs['units'] = 'mm/day'
+    bias_da.attrs['long_name'] = 'ET bias (E3SM - MODIS)'
+
+    print(f"Bias field computed. Shape: {bias.shape}")
+except Exception as e:
+    print(f"Error computing bias: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# ============================================================
+# 6. Compute global mean bias and spatial correlation
+# ============================================================
+try:
+    # Mask where both model and obs are valid
+    valid = np.isfinite(model_vals) & np.isfinite(obs_vals)
+    print(f"Number of valid grid cells: {valid.sum()}")
+
+    # Area weighting using cos(lat)
+    lat_2d = np.broadcast_to(modis_lat[:, np.newaxis], bias.shape)
+    weights = np.cos(np.deg2rad(lat_2d))
+    weights = np.where(valid, weights, 0.0)
+
+    # Global mean bias (area-weighted)
+    global_mean_bias = np.nansum(bias * weights) / np.nansum(weights)
+
+    # Spatial correlation (area-weighted)
+    m_valid = model_vals[valid]
+    o_valid = obs_vals[valid]
+    w_valid = weights[valid]
+
+    m_wmean = np.average(m_valid, weights=w_valid)
+    o_wmean = np.average(o_valid, weights=w_valid)
+
+    cov = np.average((m_valid - m_wmean) * (o_valid - o_wmean), weights=w_valid)
+    std_m = np.sqrt(np.average((m_valid - m_wmean) ** 2, weights=w_valid))
+    std_o = np.sqrt(np.average((o_valid - o_wmean) ** 2, weights=w_valid))
+    spatial_corr = cov / (std_m * std_o)
+
+    # Also compute RMSE
+    rmse = np.sqrt(np.average((m_valid - o_valid) ** 2, weights=w_valid))
+
+    # Global mean values
+    global_mean_model = np.average(m_valid, weights=w_valid)
+    global_mean_obs = np.average(o_valid, weights=w_valid)
+
+    print(f"\n{'='*60}")
+    print(f"BENCHMARK RESULTS: E3SM ET vs MODIS ET")
+    print(f"{'='*60}")
+    print(f"E3SM period:             1985-1989 climatology")
+    print(f"MODIS period:            full record climatology")
+    print(f"Valid grid cells:        {valid.sum()}")
+    print(f"Global mean E3SM ET:     {global_mean_model:.4f} mm/day")
+    print(f"Global mean MODIS ET:    {global_mean_obs:.4f} mm/day")
+    print(f"Global mean bias:        {global_mean_bias:.4f} mm/day")
+    print(f"Spatial correlation:     {spatial_corr:.4f}")
+    print(f"RMSE:                    {rmse:.4f} mm/day")
+    print(f"{'='*60}\n")
+
+except Exception as e:
+    print(f"Error computing statistics: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# ============================================================
+# 7. Save summary statistics to CSV
+# ============================================================
+try:
+    import pandas as pd
+    stats = {
+        'metric': ['global_mean_model_ET_mmday', 'global_mean_obs_ET_mmday',
+                    'global_mean_bias_mmday', 'spatial_correlation', 'RMSE_mmday',
+                    'n_valid_cells', 'model_period', 'obs_dataset'],
+        'value': [f"{global_mean_model:.6f}", f"{global_mean_obs:.6f}",
+                  f"{global_mean_bias:.6f}", f"{spatial_corr:.6f}", f"{rmse:.6f}",
+                  f"{valid.sum()}", "1985-1989", "MODIS (ILAMB)"]
+    }
+    df_stats = pd.DataFrame(stats)
+    stats_file = os.path.join(outdir, "et_benchmark_statistics.csv")
+    df_stats.to_csv(stats_file, index=False)
+    print(f"Statistics saved to {stats_file}")
+except Exception as e:
+    print(f"Error saving statistics CSV: {e}")
+
+# ============================================================
+# 8. Save bias field as NetCDF
+# ============================================================
+try:
+    ds_out = xr.Dataset({
+        'ET_bias': bias_da,
+        'ET_model': xr.DataArray(model_vals, dims=['lat', 'lon'],
+                                  coords={'lat': modis_lat, 'lon': modis_lon},
+                                  attrs={'units': 'mm/day', 'long_name': 'E3SM ET (time mean 1985-1989)'}),
+        'ET_obs': xr.DataArray(obs_vals, dims=['lat', 'lon'],
+                                coords={'lat': modis_lat, 'lon': modis_lon},
+                                attrs={'units': 'mm/day', 'long_name': 'MODIS ET (time mean)'})
+    })
+    ds_out.attrs['description'] = 'E3SM vs MODIS ET benchmark'
+    ds_out.attrs['global_mean_bias_mmday'] = float(global_mean_bias)
+    ds_out.attrs['spatial_correlation'] = float(spatial_corr)
+    ds_out.attrs['RMSE_mmday'] = float(rmse)
+
+    nc_file = os.path.join(outdir, "et_benchmark_bias.nc")
+    ds_out.to_netcdf(nc_file)
+    print(f"Bias field saved to {nc_file}")
+except Exception as e:
+    print(f"Error saving NetCDF: {e}")
+
+# ============================================================
+# 9. Plot bias map
+# ============================================================
+try:
+    fig = plt.figure(figsize=(14, 8))
+
+    # Panel 1: E3SM ET
+    ax1 = fig.add_subplot(3, 1, 1, projection=ccrs.Robinson())
+    ax1.set_global()
+    ax1.coastlines(linewidth=0.5)
+    ax1.add_feature(cfeature.BORDERS, linewidth=0.3)
+
+    vmax_et = np.nanpercentile(obs_vals[np.isfinite(obs_vals)], 95)
+    im1 = ax1.pcolormesh(modis_lon, modis_lat, model_vals,
+                          transform=ccrs.PlateCarree(),
+                          cmap='YlGnBu', vmin=0, vmax=vmax_et, shading='auto')
+    cb1 = plt.colorbar(im1, ax=ax1, orientation='vertical', shrink=0.7, pad=0.02)
+    cb1.set_label('mm/day')
+    ax1.set_title('E3SM ET (1985-1989 mean)', fontsize=12)
+
+    # Panel 2: MODIS ET
+    ax2 = fig.add_subplot(3, 1, 2, projection=ccrs.Robinson())
+    ax2.set_global()
+    ax2.coastlines(linewidth=0.5)
+    ax2.add_feature(cfeature.BORDERS, linewidth=0.3)
+
+    im2 = ax2.pcolormesh(modis_lon, modis_lat, obs_vals,
+                          transform=ccrs.PlateCarree(),
+                          cmap='YlGnBu', vmin=0, vmax=vmax_et, shading='auto')
+    cb2 = plt.colorbar(im2, ax=ax2, orientation='vertical', shrink=0.7, pad=0.02)
+    cb2.set_label('mm/day')
+    ax2.set_title('MODIS ET (climatological mean)', fontsize=12)
+
+    # Panel 3: Bias
+    ax3 = fig.add_subplot(3, 1, 3, projection=ccrs.Robinson())
+    ax3.set_global()
+    ax3.coastlines(linewidth=0.5)
+    ax3.add_feature(cfeature.BORDERS, linewidth=0.3)
+
+    bias_abs_max = np.nanpercentile(np.abs(bias[np.isfinite(bias)]), 95)
+    im3 = ax3.pcolormesh(modis_lon, modis_lat, bias,
+                          transform=ccrs.PlateCarree(),
+                          cmap='RdBu_r', vmin=-bias_abs_max, vmax=bias_abs_max, shading='auto')
+    cb3 = plt.colorbar(im3, ax=ax3, orientation='vertical', shrink=0.7, pad=0.02)
+    cb3.set_label('mm/day')
+    ax3.set_title(f'ET Bias (E3SM - MODIS) | Mean bias: {global_mean_bias:.3f} mm/day, '
+                  f'Corr: {spatial_corr:.3f}, RMSE: {rmse:.3f} mm/day', fontsize=11)
+
+    plt.tight_layout()
+    fig_file = os.path.join(outdir, "et_benchmark_bias_map.png")
+    plt.savefig(fig_file, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"Bias map saved to {fig_file}")
+
+except Exception as e:
+    print(f"Error creating plot: {e}")
+    import traceback
+    traceback.print_exc()
+
+# ============================================================
+# 10. Also make a scatter density plot
+# ============================================================
+try:
+    fig2, ax = plt.subplots(figsize=(7, 7))
+    
+    # Subsample for plotting if too many points
+    m_flat = m_valid
+    o_flat = o_valid
+    if len(m_flat) > 50000:
+        idx = np.random.choice(len(m_flat), 50000, replace=False)
+        m_plot = m_flat[idx]
+        o_plot = o_flat[idx]
+    else:
+        m_plot = m_flat
+        o_plot = o_flat
+
+    hb = ax.hexbin(o_plot, m_plot, gridsize=80, cmap='hot_r', mincnt=1)
+    plt.colorbar(hb, ax=ax, label='Count')
+    
+    max_val = max(np.nanmax(m_plot), np.nanmax(o_plot)) * 1.05
+    ax.plot([0, max_val], [0, max_val], 'k--', linewidth=1, label='1:1 line')
+    ax.set_xlabel('MODIS ET (mm/day)', fontsize=12)
+    ax.set_ylabel('E3SM ET (mm/day)', fontsize=12)
+    ax.set_title(f'E3SM vs MODIS ET\nCorr={spatial_corr:.3f}, Bias={global_mean_bias:.3f} mm/day, '
+                 f'RMSE={rmse:.3f} mm/day', fontsize=12)
+    ax.set_xlim(0, max_val)
+    ax.set_ylim(0, max_val)
+    ax.set_aspect('equal')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+
+    scatter_file = os.path.join(outdir, "et_benchmark_scatter.png")
+    plt.savefig(scatter_file, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"Scatter plot saved to {scatter_file}")
+
+except Exception as e:
+    print(f"Error creating scatter plot: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("\nDone! All outputs saved to:", outdir)
+```

@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     sim_file = config['sim_file']
     obs_file = config['obs_file']
@@ -126,6 +126,25 @@ def run(config: dict) -> dict:
             f"No matching column names between sim and obs. "
             f"Sim: {list(sim.columns)[:5]}, Obs: {list(obs.columns)[:5]}"
         )
+
+    # Align sampling frequency before intersecting. Plain index.intersection
+    # between monthly sim and daily obs would silently keep only the daily
+    # obs values landing on day-1-of-month, comparing monthly means to a
+    # single day — aggregate finer series to coarser frequency instead.
+    def _median_step_days(idx):
+        if len(idx) < 2:
+            return None
+        return float(np.median(np.diff(idx.values).astype('timedelta64[D]').astype(float)))
+
+    sim_dt = _median_step_days(sim.index)
+    obs_dt = _median_step_days(obs.index)
+    if sim_dt and obs_dt and abs(sim_dt - obs_dt) > 1:
+        if sim_dt > obs_dt:
+            obs = obs.resample('MS').mean() if sim_dt >= 28 else obs.resample(f'{int(round(sim_dt))}D').mean()
+            print(f"  Aggregated obs from ~{obs_dt:.1f}d to ~{sim_dt:.1f}d steps")
+        else:
+            sim = sim.resample('MS').mean() if obs_dt >= 28 else sim.resample(f'{int(round(obs_dt))}D').mean()
+            print(f"  Aggregated sim from ~{sim_dt:.1f}d to ~{obs_dt:.1f}d steps")
 
     # Find overlapping dates
     common_dates = sim.index.intersection(obs.index)

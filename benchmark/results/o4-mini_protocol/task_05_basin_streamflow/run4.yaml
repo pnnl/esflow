@@ -1,0 +1,85 @@
+name: Basin-scale Streamflow Analysis 1985-1989
+description: 'This workflow matches six major river basin gauges to the E3SM MOSART
+  model grid,
+
+  extracts simulated and observed streamflow for 1985–1989, computes validation metrics
+
+  (RMSE, NSE, KGE, PBIAS), and generates per-basin time series plots with basin boundaries.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm
+  obs_dir: ./data/sample/obs/streamflow
+  metadata_file: ./data/sample/obs/gauge_metadata.csv
+  basins_file: ./data/sample/obs/basin_polygons.geojson
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_protocol/task_05_basin_streamflow/run4_output
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  component: mosart
+  variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+  gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  style: cream_ink
+steps:
+- id: load_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.metadata_file}
+  outputs:
+    metadata_file: metadata_validated.csv
+    n_gauges: n_gauges.txt
+- id: match_gauges
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+  outputs:
+    matched_file: matched_gauges.csv
+    n_matched: n_matched.txt
+- id: extract_sim_streamflow
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+    variable: ${settings.variable}
+    locations_file: ${match_gauges.outputs.matched_file}
+    years: ${settings.years}
+  outputs:
+    timeseries_file: sim_streamflow_1985_1989.csv
+    n_locations: n_sim_locations.txt
+- id: extract_obs_streamflow
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.obs_dir}
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    years: ${settings.years}
+    gauge_ids: ${settings.gauge_ids}
+  outputs:
+    timeseries_file: obs_streamflow_1985_1989.csv
+    n_gauges: n_obs_gauges.txt
+- id: compute_validation_metrics
+  tool: compute_metrics
+  params:
+    sim_file: ${extract_sim_streamflow.outputs.timeseries_file}
+    obs_file: ${extract_obs_streamflow.outputs.timeseries_file}
+  outputs:
+    metrics_file: streamflow_metrics.csv
+    n_gauges: n_metrics_gauges.txt
+- id: plot_basin_timeseries
+  tool: plot_basin_timeseries
+  params:
+    basins_file: ${settings.basins_file}
+    sim_file: ${extract_sim_streamflow.outputs.timeseries_file}
+    obs_file: ${extract_obs_streamflow.outputs.timeseries_file}
+    locations_file: ${match_gauges.outputs.matched_file}
+    gauge_ids: ${settings.gauge_ids}
+    metrics_file: ${compute_validation_metrics.outputs.metrics_file}
+  outputs:
+    plot_files: basin_timeseries_plots

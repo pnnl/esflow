@@ -13,7 +13,7 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 from core.e3sm import find_e3sm_files, open_e3sm_dataset, cftime_to_datetime
 
 
@@ -49,7 +49,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     data_dir = config['data_dir']
     case_name = config['case_name']

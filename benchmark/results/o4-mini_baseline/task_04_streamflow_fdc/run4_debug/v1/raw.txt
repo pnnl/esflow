@@ -1,0 +1,179 @@
+import os
+import glob
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from scipy.stats import wasserstein_distance
+
+# Directories and parameters
+data_dir = "./data/sample/e3sm"
+rof_dir = os.path.join(data_dir, "rof")
+case = "sample.v3.LR.historical"
+obs_dir = "./data/sample/obs/streamflow"
+meta_file = "./data/sample/obs/gauge_metadata.csv"
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_04_streamflow_fdc/run4_output"
+os.makedirs(output_dir, exist_ok=True)
+
+# Time range strings for slicing
+start_date = "1985-01-01"
+end_date = "1989-12-31"
+
+# Percentile levels
+q_levels = [0.1, 0.5, 0.9]
+
+# Six gauges for detailed panels
+panel_gauges = ["3629000","4121801","4115200","6742900","2969100","1159100"]
+
+# Load gauge metadata
+meta = pd.read_csv(meta_file, dtype={"gauge_id": str})
+meta = meta.set_index("gauge_id")
+
+# Find a sample daily file for grid coordinates
+daily_pattern = os.path.join(rof_dir, f"{case}.mosart.h1.*-00000.nc")
+daily_files = sorted(glob.glob(daily_pattern))
+if not daily_files:
+    raise FileNotFoundError("No daily MOSART files found for h1 files")
+ds0 = xr.open_dataset(daily_files[0], decode_times=True)
+grid_lat = ds0["lat"]
+grid_lon = ds0["lon"]
+ds0.close()
+
+# Map each gauge to nearest grid cell
+gauge_info = {}
+for gid, row in meta.iterrows():
+    lat0 = row["lat"]
+    lon0 = row["lon"]
+    # adjust lon to 0-360 if needed
+    if grid_lon.min() >= 0 and lon0 < 0:
+        lon0_mod = lon0 + 360
+    else:
+        lon0_mod = lon0
+    dist = np.sqrt((grid_lat - lat0)**2 + (grid_lon - lon0_mod)**2)
+    idx = np.unravel_index(np.argmin(dist.values), dist.shape)
+    gauge_info[gid] = {"i_lat": idx[0], "i_lon": idx[1], "map_lon": row["lon"], "map_lat": row["lat"]}
+
+# Load all daily discharge data
+daily_files = sorted(glob.glob(daily_pattern))
+ds = xr.open_mfdataset(daily_files, combine="by_coords", decode_times=True)
+var = ds["RIVER_DISCHARGE_OVER_LAND_LIQ"]
+
+# Containers for results
+metrics = []
+fdc_data = []
+
+# Loop over gauges
+for gid, info in gauge_info.items():
+    # extract model series
+    try:
+        sel = var.isel(lat=info["i_lat"], lon=info["i_lon"]).sel(time=slice(start_date, end_date))
+        sim_vals = sel.values
+        time_vals = sel["time"].values
+        time_index = pd.to_datetime(time_vals.astype(str))
+        sim = pd.Series(sim_vals, index=time_index, name="sim")
+    except Exception as e:
+        print(f"Failed to extract model series for {gid}:", e)
+        continue
+
+    # load observed series
+    obs_file = os.path.join(obs_dir, f"{gid}.csv")
+    if not os.path.exists(obs_file):
+        print(f"Obs file missing for gauge {gid}")
+        continue
+    obs_df = pd.read_csv(obs_file, parse_dates=["date"])
+    obs = obs_df.set_index("date")["discharge_m3s"].rename("obs")
+    obs = obs.sort_index().loc[start_date:end_date]
+
+    # align and drop missing
+    df = pd.concat([sim, obs], axis=1).dropna()
+    if df.empty:
+        print(f"No overlapping data for gauge {gid}")
+        continue
+    sim_al = df["sim"]
+    obs_al = df["obs"]
+
+    # volume bias
+    vol_bias = (sim_al.sum() - obs_al.sum()) / obs_al.sum()
+
+    # Wasserstein distance
+    wd = wasserstein_distance(obs_al.values, sim_al.values)
+
+    # quantile ratios
+    q_obs = np.quantile(obs_al.values, q_levels)
+    q_sim = np.quantile(sim_al.values, q_levels)
+    ratios = q_sim / q_obs
+
+    metrics.append({
+        "gauge_id": gid,
+        "volume_bias": vol_bias,
+        "wasserstein_distance": wd,
+        "q10_ratio": ratios[0],
+        "q50_ratio": ratios[1],
+        "q90_ratio": ratios[2]
+    })
+
+    # flow duration curve
+    n = len(df)
+    excp = np.arange(1, n+1) / (n+1)
+    sim_sorted = np.sort(sim_al.values)[::-1]
+    obs_sorted = np.sort(obs_al.values)[::-1]
+    df_fdc = pd.DataFrame({
+        "gauge_id": gid,
+        "exceedance": excp,
+        "sim": sim_sorted,
+        "obs": obs_sorted
+    })
+    fdc_data.append(df_fdc)
+
+# Save metrics
+metrics_df = pd.DataFrame(metrics)
+metrics_csv = os.path.join(output_dir, "streamflow_fdc_metrics.csv")
+try:
+    metrics_df.to_csv(metrics_csv, index=False)
+except Exception as e:
+    print("Error saving metrics:", e)
+
+# Save FDC curves
+fdc_all = pd.concat(fdc_data, ignore_index=True)
+fdc_csv = os.path.join(output_dir, "streamflow_fdc_curves.csv")
+try:
+    fdc_all.to_csv(fdc_csv, index=False)
+except Exception as e:
+    print("Error saving FDC curves:", e)
+
+# Plot map and FDC panels
+try:
+    fig = plt.figure(figsize=(15,10))
+    ax_map = plt.subplot2grid((3,4), (0,0), colspan=2, rowspan=3, projection=ccrs.PlateCarree())
+    ax_map.coastlines()
+    lons = [gauge_info[gid]["map_lon"] for gid in metrics_df["gauge_id"]]
+    lats = [gauge_info[gid]["map_lat"] for gid in metrics_df["gauge_id"]]
+    sc = ax_map.scatter(lons, lats, c=metrics_df["wasserstein_distance"],
+                        cmap="viridis", s=50, transform=ccrs.PlateCarree())
+    plt.colorbar(sc, ax=ax_map, label="Wasserstein distance")
+    ax_map.set_title("Gauge Wasserstein Distances")
+
+    for idx, gid in enumerate(panel_gauges):
+        ax = plt.subplot2grid((3,4), (idx//2, 2 + (idx%2)))
+        sub = fdc_all[fdc_all["gauge_id"] == gid]
+        if sub.empty:
+            ax.set_title(f"No data {gid}")
+            continue
+        ax.plot(sub["exceedance"], sub["obs"], label="obs", color="black")
+        ax.plot(sub["exceedance"], sub["sim"], label="sim", color="red")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        name = meta.loc[gid, "river_name"] if gid in meta.index else gid
+        ax.set_title(f"{name} ({gid})")
+        if idx//2 == 2:
+            ax.set_xlabel("Exceedance probability")
+        if idx%2 == 0:
+            ax.set_ylabel("Discharge (m3/s)")
+        ax.legend(fontsize="small")
+    plt.tight_layout()
+    fig_file = os.path.join(output_dir, "streamflow_fdc_map_and_panels.png")
+    fig.savefig(fig_file, dpi=150)
+    plt.close(fig)
+except Exception as e:
+    print("Error in plotting:", e)

@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+import os
+import sys
+import glob
+import re
+import warnings
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from scipy.spatial import cKDTree
+from scipy import stats
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+def ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        print(f"Failed to create directory {path}: {e}", file=sys.stderr)
+
+def download_file(url, dest_path):
+    try:
+        import urllib.request
+        print(f"Downloading {url} -> {dest_path}")
+        urllib.request.urlretrieve(url, dest_path)
+        print("Download complete.")
+        return True
+    except Exception as e:
+        print(f"Failed to download {url}: {e}", file=sys.stderr)
+        return False
+
+def find_coord_names(da):
+    candidates_lat = ["lat", "latitude", "LAT", "nav_lat", "y"]
+    candidates_lon = ["lon", "longitude", "LON", "nav_lon", "x"]
+    lat_name = None
+    lon_name = None
+    for name in list(da.coords):
+        if name.lower() in candidates_lat and lat_name is None:
+            lat_name = name
+        if name.lower() in candidates_lon and lon_name is None:
+            lon_name = name
+    if lat_name is None:
+        for name in da.dims:
+            if name.lower() in candidates_lat:
+                lat_name = name
+                break
+    if lon_name is None:
+        for name in da.dims:
+            if name.lower() in candidates_lon:
+                lon_name = name
+                break
+    # Look for lat/lon variables if not coords
+    if lat_name is None:
+        for name in list(da._to_temp_dataset().variables):
+            if name.lower() in candidates_lat:
+                lat_name = name
+                break
+    if lon_name is None:
+        for name in list(da._to_temp_dataset().variables):
+            if name.lower() in candidates_lon:
+                lon_name = name
+                break
+    return lat_name, lon_name
+
+def wrap_lon_to_match(source_lon, target_lon):
+    src = np.array(source_lon)
+    tgt = np.array(target_lon)
+    if np.nanmax(tgt) > 180:
+        return np.mod(src, 360.0)
+    else:
+        return ((src + 180.0) % 360.0) - 180.0
+
+def to_2d(lat, lon):
+    lat_arr = np.array(lat)
+    lon_arr = np.array(lon)
+    if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+        lon2d, lat2d = np.meshgrid(lon_arr, lat_arr)
+        return lat2d, lon2d
+    elif lat_arr.ndim == 2 and lon_arr.ndim == 2:
+        return lat_arr, lon_arr
+    else:
+        if lat_arr.ndim == 2 and lon_arr.ndim == 1:
+            lon2d = np.tile(lon_arr[np.newaxis, :], (lat_arr.shape[0], 1))
+            return lat_arr, lon2d
+        if lat_arr.ndim == 1 and lon_arr.ndim == 2:
+            lat2d = np.tile(lat_arr[:, np.newaxis], (1, lon_arr.shape[1]))
+            return lat2d, lon_arr
+        raise ValueError("Cannot form 2D lat/lon arrays from given inputs.")
+
+def regrid_nearest(source_da, target_lat_1d, target_lon_1d):
+    lat_name, lon_name = find_coord_names(source_da)
+    if lat_name is None or lon_name is None:
+        raise ValueError("Could not find latitude/longitude coordinates in source DataArray.")
+    src_lat_vals = source_da[lat_name].values
+    src_lon_vals = source_da[lon_name].values
+    wrapped_src_lon = wrap_lon_to_match(src_lon_vals, target_lon_1d)
+    src_lat2d, src_lon2d = to_2d(src_lat_vals, wrapped_src_lon)
+    tgt_lon2d, tgt_lat2d = np.meshgrid(target_lon_1d, target_lat_1d)
+    pts_src = np.column_stack([src_lat2d.ravel(), src_lon2d.ravel()])
+    vals_src = source_da.values.ravel()
+    valid = np.isfinite(vals_src) & np.isfinite(pts_src[:, 0]) & np.isfinite(pts_src[:, 1])
+    if np.count_nonzero(valid) == 0:
+        raise ValueError("No valid source data for regridding.")
+    tree = cKDTree(pts_src[valid, :])
+    _, idxs = tree.query(np.column_stack([tgt_lat2d.ravel(), tgt_lon2d.ravel()]), k=1)
+    mapped_vals = np.full(tgt_lat2d.size, np.nan, dtype=float)
+    mapped_vals[:] = vals_src[valid][idxs]
+    mapped_vals2d = mapped_vals.reshape(tgt_lat2d.shape)
+    da_out = xr.DataArray(
+        mapped_vals2d,
+        coords={"lat": target_lat_1d, "lon": target_lon_1d},
+        dims=("lat", "lon"),
+        name=source_da.name
+    )
+    da_out.attrs.update(source_da.attrs)
+    return da_out
+
+def compute_edges_1d(coords):
+    coords = np.asarray(coords)
+    diffs = np.diff(coords)
+    edges = np.zeros(coords.size + 1, dtype=float)
+    if diffs.size == 0:
+        # Single point, make arbitrary small edges
+        edges[0] = coords[0] - 0.5
+        edges[1] = coords[0] + 0.5
+        return edges
+    edges[1:-1] = coords[:-1] + diffs / 2.0
+    edges[0] = coords[0] - diffs[0] / 2.0
+    edges[-1] = coords[-1] + diffs[-1] / 2.0
+    return edges
+
+def weighted_global_mean(data2d, lat1d):
+    weights = np.cos(np.deg2rad(lat1d))
+    W = np.tile(weights[:, np.newaxis], (1, data2d.shape[1]))
+    mask = np.isfinite(data2d)
+    num = np.nansum(data2d[mask] * W[mask])
+    den = np.nansum(W[mask])
+    return np.nan if den == 0 else (num / den)
+
+def collect_elm_files(lnd_dir, case_name, start_year, end_year):
+    files = []
+    for y in range(start_year, end_year + 1):
+        pattern = os.path.join(lnd_dir, f"{case_name}.elm.h0.{y:04d}-*.nc")
+        files.extend(sorted(glob.glob(pattern)))
+    if not files:
+        # Fallback: broader glob with regex filter
+        all_files = sorted(glob.glob(os.path.join(lnd_dir, f"{case_name}.elm.h0.*.nc")))
+        yr_re = re.compile(r"\.(\d{4})-(\d{2})\.nc$")
+        for f in all_files:
+            m = yr_re.search(os.path.basename(f))
+            if m:
+                yr = int(m.group(1))
+                if start_year <= yr <= end_year:
+                    files.append(f)
+    return sorted(files)
+
+def main():
+    case_name = "sample.v3.LR.historical"
+    lnd_dir = "./data/sample/e3sm/lnd"
+    start_year = 1985
+    end_year = 1989
+
+    output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_baseline/task_03_et_benchmark/run2_debug/v1/output"
+    ensure_dir(output_dir)
+
+    ilamb_url = "https://www.ilamb.org/ILAMB-Data/DATA/evspsbl/MODIS/et_0.5x0.5.nc"
+    modis_local_path = os.path.join(output_dir, "MODIS_et_0.5x0.5.nc")
+    if not os.path.exists(modis_local_path):
+        success = download_file(ilamb_url, modis_local_path)
+        if not success:
+            print("Attempting to open remote dataset directly...", file=sys.stderr)
+            modis_local_path = ilamb_url
+
+    try:
+        ds_obs = xr.open_dataset(modis_local_path)
+    except Exception as e:
+        print(f"Failed to open MODIS dataset: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if "et" in ds_obs.variables:
+        obs_var = "et"
+    else:
+        obs_vars = [v for v in ds_obs.data_vars if "et" in v.lower()]
+        if len(obs_vars) == 0:
+            print("Could not find 'et' variable in MODIS dataset.", file=sys.stderr)
+            sys.exit(1)
+        obs_var = obs_vars[0]
+
+    da_obs = ds_obs[obs_var]
+    obs_units = str(da_obs.attrs.get("units", "")).lower()
+    obs_to_mm_per_day = 1.0
+    if "kg m-2 s-1" in obs_units or "kg/m2/s" in obs_units or "mm s-1" in obs_units or "mm/s" in obs_units:
+        obs_to_mm_per_day = 86400.0
+    elif "mm/day" in obs_units or "mm d-1" in obs_units:
+        obs_to_mm_per_day = 1.0
+    else:
+        obs_to_mm_per_day = 1.0
+
+    try:
+        if "time" in da_obs.dims:
+            obs_et_clim = (da_obs * obs_to_mm_per_day).mean(dim="time", skipna=True)
+        else:
+            obs_et_clim = da_obs * obs_to_mm_per_day
+    except Exception as e:
+        print(f"Failed to compute observation climatology: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    elm_files = collect_elm_files(lnd_dir, case_name, start_year, end_year)
+    if len(elm_files) == 0:
+        print("No ELM files found for years 1985-1989 in path:", lnd_dir, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        ds_lnd = xr.open_mfdataset(elm_files, combine="by_coords")
+    except Exception as e:
+        print(f"Failed to open ELM land dataset: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    missing = [v for v in ["QVEGE", "QVEGT", "QSOIL"] if v not in ds_lnd.variables]
+    if missing:
+        print(f"Missing ELM variables: {missing}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        et_model = ds_lnd["QVEGE"] + ds_lnd["QVEGT"] + ds_lnd["QSOIL"]  # mm/s
+        et_model_mm_per_day = et_model * 86400.0  # convert to mm/day
+        if "time" in et_model_mm_per_day.dims:
+            et_model_clim = et_model_mm_per_day.sel(time=slice(f"{start_year}-01-01", f"{end_year}-12-31")).mean(dim="time", skipna=True)
+        else:
+            et_model_clim = et_model_mm_per_day
+        et_model_clim.name = "et_model_mm_per_day"
+        et_model_clim.attrs["units"] = "mm/day"
+    except Exception as e:
+        print(f"Failed to compute ELM ET climatology: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    lat_obs_name, lon_obs_name = find_coord_names(obs_et_clim)
+    if lat_obs_name is None or lon_obs_name is None:
+        print("Could not determine lat/lon names in MODIS dataset.", file=sys.stderr)
+        sys.exit(1)
+
+    lat_obs = ds_obs[lat_obs_name].values
+    lon_obs = ds_obs[lon_obs_name].values
+    if lat_obs.ndim != 1 or lon_obs.ndim != 1:
+        try:
+            lat_obs = np.unique(lat_obs)
+            lon_obs = np.unique(lon_obs)
+        except Exception as e:
+            print(f"Observation grid lat/lon not 1D and cannot be simplified: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        et_model_on_obs = et_model_clim
+        # Ensure the model DataArray carries lat/lon coordinates:
+        m_lat_name, m_lon_name = find_coord_names(et_model_on_obs)
+        if m_lat_name is None or m_lon_name is None:
+            # Try common alternatives in ELM datasets
+            for cand in ["lat", "LATIXY"]:
+                if cand in ds_lnd.variables or cand in ds_lnd.coords:
+                    m_lat_name = cand
+                    break
+            for cand in ["lon", "LONGXY"]:
+                if cand in ds_lnd.variables or cand in ds_lnd.coords:
+                    m_lon_name = cand
+                    break
+            if m_lat_name is not None and m_lon_name is not None:
+                et_model_on_obs = et_model_on_obs.assign_coords(
+                    {m_lat_name: ds_lnd[m_lat_name], m_lon_name: ds_lnd[m_lon_name]}
+                )
+        # Regrid
+        et_model_on_obs = regrid_nearest(et_model_on_obs, lat_obs, lon_obs)
+        et_model_on_obs.name = "et_model_mm_per_day_on_obs_grid"
+        et_model_on_obs.attrs["units"] = "mm/day"
+    except Exception as e:
+        print(f"Regridding failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if obs_et_clim.dims != ("lat", "lon"):
+            rename_dict = {}
+            if lat_obs_name != "lat":
+                rename_dict[lat_obs_name] = "lat"
+            if lon_obs_name != "lon":
+                rename_dict[lon_obs_name] = "lon"
+            obs_et_clim = obs_et_clim.rename(rename_dict)
+        obs_et_clim_mm_per_day = obs_et_clim * 1.0
+        obs_et_clim_mm_per_day.name = "et_modis_mm_per_day"
+        obs_et_clim_mm_per_day.attrs["units"] = "mm/day"
+    except Exception as e:
+        print(f"Failed to align observation climatology: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    obs_on_grid = obs_et_clim_mm_per_day.transpose("lat", "lon")
+    model_on_grid = et_model_on_obs.transpose("lat", "lon")
+    bias = (model_on_grid - obs_on_grid).where(np.isfinite(obs_on_grid))
+
+    try:
+        gmb = weighted_global_mean(bias.values, obs_on_grid["lat"].values)
+    except Exception as e:
+        print(f"Failed to compute global mean bias: {e}", file=sys.stderr)
+        gmb = np.nan
+
+    try:
+        mask = np.isfinite(model_on_grid.values) & np.isfinite(obs_on_grid.values)
+        mvals = model_on_grid.values[mask]
+        ovals = obs_on_grid.values[mask]
+        if mvals.size > 1 and np.nanstd(mvals) > 0 and np.nanstd(ovals) > 0:
+            r, _ = stats.pearsonr(mvals, ovals)
+            spatial_corr = r
+        else:
+            spatial_corr = np.nan
+    except Exception as e:
+        print(f"Failed to compute spatial correlation: {e}", file=sys.stderr)
+        spatial_corr = np.nan
+
+    metrics = {
+        "global_mean_bias_mm_per_day": [float(gmb) if np.isfinite(gmb) else np.nan],
+        "spatial_correlation": [float(spatial_corr) if np.isfinite(spatial_corr) else np.nan]
+    }
+    metrics_df = pd.DataFrame(metrics)
+    try:
+        metrics_csv = os.path.join(output_dir, "metrics_et_e3sm_vs_modis.csv")
+        metrics_df.to_csv(metrics_csv, index=False)
+        print(f"Saved metrics to {metrics_csv}")
+    except Exception as e:
+        print(f"Failed to save metrics CSV: {e}", file=sys.stderr)
+
+    try:
+        ds_out = xr.Dataset(
+            {
+                "model_et_mm_per_day": model_on_grid,
+                "modis_et_mm_per_day": obs_on_grid,
+                "bias_model_minus_modis_mm_per_day": bias
+            }
+        )
+        ds_out["model_et_mm_per_day"].attrs["long_name"] = "E3SM ELM evapotranspiration climatology (1985-1989)"
+        ds_out["modis_et_mm_per_day"].attrs["long_name"] = "MODIS evapotranspiration climatology (time-mean)"
+        ds_out["bias_model_minus_modis_mm_per_day"].attrs["long_name"] = "Bias (model - MODIS)"
+        ds_out.attrs["description"] = "E3SM ELM vs MODIS ET climatology benchmark; model years 1985-1989, MODIS time-mean"
+        ds_out.attrs["units"] = "mm/day"
+        nc_path = os.path.join(output_dir, "et_benchmark_e3sm_vs_modis.nc")
+        ds_out.to_netcdf(nc_path)
+        print(f"Saved NetCDF to {nc_path}")
+    except Exception as e:
+        print(f"Failed to save NetCDF: {e}", file=sys.stderr)
+
+    try:
+        fig = plt.figure(figsize=(12, 6))
+        ax = plt.axes(projection=ccrs.Robinson())
+        ax.set_global()
+        ax.coastlines(linewidth=0.6)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, alpha=0.5)
+
+        lat = obs_on_grid["lat"].values
+        lon = obs_on_grid["lon"].values
+        abs95 = np.nanpercentile(np.abs(bias.values), 95) if np.isfinite(bias.values).any() else 1.0
+        vmax = max(1e-6, abs95)
+        vmin = -vmax
+        lat_edges = compute_edges_1d(lat)
+        lon_edges = compute_edges_1d(lon)
+        Lon, Lat = np.meshgrid(lon_edges, lat_edges)
+        pcm = ax.pcolormesh(Lon, Lat, bias.values, cmap="RdBu_r", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb = plt.colorbar(pcm, orientation="horizontal", pad=0.05, fraction=0.05)
+        cb.set_label("Bias in ET (mm/day) [E3SM - MODIS]")
+
+        title = f"E3SM ELM vs MODIS ET Bias (1985–1989)\nGlobal mean bias: {gmb:.3f} mm/day, Spatial corr: {spatial_corr:.3f}"
+        ax.set_title(title, fontsize=12)
+        fig.tight_layout()
+
+        png_path = os.path.join(output_dir, "bias_map_et_e3sm_minus_modis.png")
+        fig.savefig(png_path, dpi=150)
+        print(f"Saved bias map to {png_path}")
+        plt.close(fig)
+    except Exception as e:
+        print(f"Failed to create/save bias map: {e}", file=sys.stderr)
+
+    print("Benchmark complete.")
+
+if __name__ == "__main__":
+    main()

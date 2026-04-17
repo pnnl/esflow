@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.base import esflow_tool, ToolSpec, Param
+from core.base import esmflow_tool, ToolSpec, Param
 
 SPEC = ToolSpec(
     name='extract_obs_timeseries',
@@ -37,7 +37,7 @@ SPEC = ToolSpec(
 )
 
 
-@esflow_tool(SPEC)
+@esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     obs_dir = Path(config['obs_dir'])
     gauge_metadata = config['gauge_metadata']

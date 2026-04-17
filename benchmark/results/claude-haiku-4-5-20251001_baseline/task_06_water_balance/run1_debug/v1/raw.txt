@@ -1,0 +1,370 @@
+#!/usr/bin/env python
+"""
+E3SM Land Model Water Balance Closure Analysis
+Analyzes monthly ELM output for 1985-1989 to check water balance closure.
+"""
+
+import os
+import sys
+import warnings
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import Polygon as MplPolygon
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from scipy.spatial import cKDTree
+import json
+from pathlib import Path
+
+warnings.filterwarnings('ignore')
+
+# Configuration
+DATA_DIR = "./data/sample/e3sm"
+OBS_DIR = "./data/sample/obs"
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_06_water_balance/run1_output"
+CASE_NAME = "sample.v3.LR.historical"
+COMPONENT = "elm"
+START_YEAR = 1985
+END_YEAR = 1989
+
+# Basin IDs and names
+BASINS = {
+    3629000: "Amazon",
+    4121801: "Missouri",
+    4115200: "Columbia",
+    6742900: "Danube",
+    2969100: "Mekong",
+    1159100: "Orange"
+}
+
+def create_output_dir():
+    """Create output directory if it doesn't exist."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Output directory: {OUTPUT_DIR}")
+
+def load_elm_data():
+    """Load and concatenate ELM monthly data for 1985-1989."""
+    print("Loading ELM data...")
+    data_files = []
+    
+    for year in range(START_YEAR, END_YEAR + 1):
+        for month in range(1, 13):
+            filename = f"{CASE_NAME}.{COMPONENT}.h0.{year:04d}-{month:02d}.nc"
+            filepath = os.path.join(DATA_DIR, "lnd", filename)
+            if os.path.exists(filepath):
+                data_files.append(filepath)
+                print(f"  Found: {filename}")
+    
+    if not data_files:
+        print(f"ERROR: No ELM data files found in {os.path.join(DATA_DIR, 'lnd')}")
+        return None
+    
+    # Load and concatenate
+    datasets = [xr.open_dataset(f) for f in sorted(data_files)]
+    ds = xr.concat(datasets, dim='time')
+    
+    print(f"Loaded {len(data_files)} files, time range: {ds.time.values[0]} to {ds.time.values[-1]}")
+    return ds
+
+def compute_water_balance_components(ds):
+    """Compute water balance components from ELM data."""
+    print("Computing water balance components...")
+    
+    # Get reference shape from QRUNOFF
+    ref_shape = ds['QRUNOFF'].shape
+    
+    # Precipitation: RAIN + SNOW (kg/m2/s -> mm/day)
+    rain = ds['RAIN'].values if 'RAIN' in ds else np.zeros(ref_shape)
+    snow = ds['SNOW'].values if 'SNOW' in ds else np.zeros(ref_shape)
+    precip = (rain + snow) * 86400 / 1000  # Convert kg/m2/s to mm/day
+    
+    # Evapotranspiration: QVEGE + QVEGT + QSOIL (mm/s -> mm/day)
+    qvege = ds['QVEGE'].values if 'QVEGE' in ds else np.zeros(ref_shape)
+    qvegt = ds['QVEGT'].values if 'QVEGT' in ds else np.zeros(ref_shape)
+    qsoil = ds['QSOIL'].values if 'QSOIL' in ds else np.zeros(ref_shape)
+    et = (qvege + qvegt + qsoil) * 86400  # Convert mm/s to mm/day
+    
+    # Total runoff: QRUNOFF (mm/s -> mm/day)
+    runoff = ds['QRUNOFF'].values * 86400  # Convert mm/s to mm/day
+    
+    # Create data arrays
+    precip_da = xr.DataArray(precip, coords=ds['QRUNOFF'].coords, dims=ds['QRUNOFF'].dims, name='P')
+    et_da = xr.DataArray(et, coords=ds['QRUNOFF'].coords, dims=ds['QRUNOFF'].dims, name='ET')
+    runoff_da = xr.DataArray(runoff, coords=ds['QRUNOFF'].coords, dims=ds['QRUNOFF'].dims, name='Q')
+    
+    # Water balance residual: P - ET - Q
+    residual_da = precip_da - et_da - runoff_da
+    residual_da.name = 'Residual'
+    
+    return precip_da, et_da, runoff_da, residual_da
+
+def compute_climatological_mean(da):
+    """Compute time-mean field."""
+    return da.mean(dim='time')
+
+def load_basin_polygons():
+    """Load basin polygons from GeoJSON."""
+    print("Loading basin polygons...")
+    geojson_path = os.path.join(OBS_DIR, "basin_polygons.geojson")
+    
+    if not os.path.exists(geojson_path):
+        print(f"WARNING: Basin polygons file not found: {geojson_path}")
+        return {}
+    
+    with open(geojson_path, 'r') as f:
+        geojson_data = json.load(f)
+    
+    basins = {}
+    for feature in geojson_data.get('features', []):
+        grdc_no = feature['properties'].get('grdc_no')
+        if grdc_no in BASINS:
+            basins[grdc_no] = feature['geometry']
+            print(f"  Loaded basin {grdc_no} ({BASINS[grdc_no]})")
+    
+    return basins
+
+def point_in_polygon(point, polygon):
+    """Check if a point is inside a polygon using ray casting."""
+    x, y = point
+    n = len(polygon)
+    inside = False
+    
+    p1x, p1y = polygon[0]
+    for i in range(1, n + 1):
+        p2x, p2y = polygon[i % n]
+        if y > min(p1y, p2y):
+            if y <= max(p1y, p2y):
+                if x <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or x <= xinters:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    
+    return inside
+
+def clip_to_basin(da, basin_geometry):
+    """Clip a data array to a basin polygon."""
+    if basin_geometry['type'] != 'Polygon':
+        return None
+    
+    coords = basin_geometry['coordinates'][0]
+    
+    # Get lat/lon from data array
+    if 'lat' not in da.coords or 'lon' not in da.coords:
+        return None
+    
+    lats = da.coords['lat'].values
+    lons = da.coords['lon'].values
+    
+    # Handle 1D and 2D coordinate arrays
+    if lats.ndim == 1 and lons.ndim == 1:
+        # Create 2D mesh
+        lon_mesh, lat_mesh = np.meshgrid(lons, lats)
+    else:
+        lon_mesh = lons
+        lat_mesh = lats
+    
+    # Create mask
+    mask = np.zeros(lon_mesh.shape, dtype=bool)
+    
+    for i in range(lon_mesh.shape[0]):
+        for j in range(lon_mesh.shape[1]):
+            if point_in_polygon((lon_mesh[i, j], lat_mesh[i, j]), coords):
+                mask[i, j] = True
+    
+    # Apply mask to the time-mean field (2D)
+    if da.ndim == 2:
+        clipped = da.where(mask, np.nan)
+    else:
+        # If 3D, apply to last two dimensions
+        clipped = da.where(mask, np.nan)
+    
+    return clipped
+
+def compute_basin_statistics(da, basin_geometry):
+    """Compute area-weighted mean for a basin."""
+    clipped = clip_to_basin(da, basin_geometry)
+    if clipped is None:
+        return np.nan
+    
+    # Simple mean (assuming equal area grid cells for now)
+    return float(clipped.mean(skipna=True))
+
+def create_composite_figure(precip_clim, et_clim, runoff_clim, residual_clim, basin_polygons):
+    """Create composite figure with global map and basin bar charts."""
+    print("Creating composite figure...")
+    
+    fig = plt.figure(figsize=(16, 12))
+    
+    # Top: Global residual map with basin outlines
+    ax_map = plt.subplot(2, 1, 1, projection=ccrs.PlateCarree())
+    
+    # Plot residual field
+    try:
+        im = ax_map.contourf(residual_clim.lon, residual_clim.lat, residual_clim.values,
+                             levels=20, cmap='RdBu_r', transform=ccrs.PlateCarree(),
+                             vmin=-5, vmax=5)
+    except Exception as e:
+        print(f"WARNING: Could not plot residual field: {e}")
+        im = None
+    
+    # Add basin outlines
+    colors = plt.cm.Set1(np.linspace(0, 1, len(BASINS)))
+    for (basin_id, basin_name), color in zip(BASINS.items(), colors):
+        if basin_id in basin_polygons:
+            geom = basin_polygons[basin_id]
+            if geom['type'] == 'Polygon':
+                coords = np.array(geom['coordinates'][0])
+                ax_map.plot(coords[:, 0], coords[:, 1], color=color, linewidth=2,
+                           transform=ccrs.PlateCarree(), label=basin_name)
+    
+    ax_map.coastlines()
+    ax_map.add_feature(cfeature.BORDERS, linestyle=':')
+    ax_map.set_global()
+    ax_map.set_title('Water Balance Residual (P - ET - Q) [mm/day] with Basin Outlines', fontsize=12, fontweight='bold')
+    ax_map.legend(loc='lower left', fontsize=8, ncol=2)
+    if im is not None:
+        cbar = plt.colorbar(im, ax=ax_map, orientation='horizontal', pad=0.05, shrink=0.8)
+        cbar.set_label('Residual [mm/day]')
+    
+    # Bottom: Per-basin bar charts
+    ax_bars = plt.subplot(2, 1, 2)
+    
+    basin_names_list = []
+    precip_means = []
+    et_means = []
+    runoff_means = []
+    residual_means = []
+    
+    for basin_id, basin_name in BASINS.items():
+        if basin_id in basin_polygons:
+            basin_names_list.append(basin_name)
+            precip_means.append(compute_basin_statistics(precip_clim, basin_polygons[basin_id]))
+            et_means.append(compute_basin_statistics(et_clim, basin_polygons[basin_id]))
+            runoff_means.append(compute_basin_statistics(runoff_clim, basin_polygons[basin_id]))
+            residual_means.append(compute_basin_statistics(residual_clim, basin_polygons[basin_id]))
+    
+    x = np.arange(len(basin_names_list))
+    width = 0.2
+    
+    ax_bars.bar(x - 1.5*width, precip_means, width, label='P', color='blue', alpha=0.7)
+    ax_bars.bar(x - 0.5*width, et_means, width, label='ET', color='red', alpha=0.7)
+    ax_bars.bar(x + 0.5*width, runoff_means, width, label='Q', color='green', alpha=0.7)
+    ax_bars.bar(x + 1.5*width, residual_means, width, label='Residual', color='orange', alpha=0.7)
+    
+    ax_bars.set_xlabel('Basin', fontsize=11, fontweight='bold')
+    ax_bars.set_ylabel('Water Balance Component [mm/day]', fontsize=11, fontweight='bold')
+    ax_bars.set_title('Basin-Averaged Water Balance Components', fontsize=12, fontweight='bold')
+    ax_bars.set_xticks(x)
+    ax_bars.set_xticklabels(basin_names_list, rotation=45, ha='right')
+    ax_bars.legend(fontsize=10)
+    ax_bars.grid(axis='y', alpha=0.3)
+    ax_bars.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
+    
+    plt.tight_layout()
+    
+    try:
+        output_file = os.path.join(OUTPUT_DIR, "water_balance_composite.png")
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Saved: {output_file}")
+    except Exception as e:
+        print(f"ERROR saving figure: {e}")
+    
+    plt.close()
+
+def save_netcdf_output(precip_clim, et_clim, runoff_clim, residual_clim):
+    """Save climatological fields to NetCDF."""
+    print("Saving NetCDF output...")
+    
+    try:
+        ds_out = xr.Dataset({
+            'P': precip_clim,
+            'ET': et_clim,
+            'Q': runoff_clim,
+            'Residual': residual_clim
+        })
+        
+        output_file = os.path.join(OUTPUT_DIR, "water_balance_climatology.nc")
+        ds_out.to_netcdf(output_file)
+        print(f"Saved: {output_file}")
+    except Exception as e:
+        print(f"ERROR saving NetCDF: {e}")
+
+def save_basin_statistics(precip_clim, et_clim, runoff_clim, residual_clim, basin_polygons):
+    """Save basin-averaged statistics to CSV."""
+    print("Saving basin statistics...")
+    
+    try:
+        stats_list = []
+        for basin_id, basin_name in BASINS.items():
+            if basin_id in basin_polygons:
+                stats_list.append({
+                    'Basin_ID': basin_id,
+                    'Basin_Name': basin_name,
+                    'P_mm_day': compute_basin_statistics(precip_clim, basin_polygons[basin_id]),
+                    'ET_mm_day': compute_basin_statistics(et_clim, basin_polygons[basin_id]),
+                    'Q_mm_day': compute_basin_statistics(runoff_clim, basin_polygons[basin_id]),
+                    'Residual_mm_day': compute_basin_statistics(residual_clim, basin_polygons[basin_id])
+                })
+        
+        df_stats = pd.DataFrame(stats_list)
+        output_file = os.path.join(OUTPUT_DIR, "basin_water_balance_statistics.csv")
+        df_stats.to_csv(output_file, index=False)
+        print(f"Saved: {output_file}")
+        print("\nBasin Statistics:")
+        print(df_stats.to_string(index=False))
+    except Exception as e:
+        print(f"ERROR saving basin statistics: {e}")
+
+def main():
+    """Main analysis function."""
+    print("=" * 70)
+    print("E3SM Land Model Water Balance Closure Analysis")
+    print("=" * 70)
+    
+    create_output_dir()
+    
+    # Load ELM data
+    ds = load_elm_data()
+    if ds is None:
+        print("ERROR: Failed to load ELM data")
+        return
+    
+    # Compute water balance components
+    precip, et, runoff, residual = compute_water_balance_components(ds)
+    
+    # Compute climatological means
+    precip_clim = compute_climatological_mean(precip)
+    et_clim = compute_climatological_mean(et)
+    runoff_clim = compute_climatological_mean(runoff)
+    residual_clim = compute_climatological_mean(residual)
+    
+    print(f"\nClimatological Means (1985-1989):")
+    print(f"  Precipitation: {float(precip_clim.mean()):8.3f} mm/day")
+    print(f"  Evapotranspiration: {float(et_clim.mean()):8.3f} mm/day")
+    print(f"  Runoff: {float(runoff_clim.mean()):8.3f} mm/day")
+    print(f"  Residual (P-ET-Q): {float(residual_clim.mean()):8.3f} mm/day")
+    
+    # Load basin polygons
+    basin_polygons = load_basin_polygons()
+    
+    # Save NetCDF output
+    save_netcdf_output(precip_clim, et_clim, runoff_clim, residual_clim)
+    
+    # Save basin statistics
+    save_basin_statistics(precip_clim, et_clim, runoff_clim, residual_clim, basin_polygons)
+    
+    # Create composite figure
+    if basin_polygons:
+        create_composite_figure(precip_clim, et_clim, runoff_clim, residual_clim, basin_polygons)
+    
+    print("\n" + "=" * 70)
+    print("Analysis complete!")
+    print("=" * 70)
+
+if __name__ == "__main__":
+    main()
