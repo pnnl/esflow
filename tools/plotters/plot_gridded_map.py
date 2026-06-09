@@ -1,12 +1,3 @@
-"""
-Plot a 2D gridded field on a map.
-
-Reads a lat-lon NetCDF file and produces a global map with coastlines
-and a colorbar. Suitable for model fields, observation fields, or bias maps.
-Optionally overlays summary statistics from a CSV file.
-"""
-
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -14,11 +5,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import xarray as xr
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from core.base import esmflow_tool, ToolSpec, Param
-
+import tempfile
 
 # Auto-detect units from variable name
 UNIT_LOOKUP = {
@@ -37,43 +24,41 @@ UNIT_LOOKUP = {
     'bias': 'mm/s',
 }
 
+def plot_gridded_map(
+    field_file: Path,
+    variable: str = "",
+    title: str = "",
+    units: str = "",
+    stats_file: str = "") -> Path:
+    """
+    Plot a 2D gridded field on a geographic map.
 
-SPEC = ToolSpec(
-    name='plot_gridded_map',
-    description=(
-        'Plot a 2D gridded field on a geographic map with coastlines. '
-        'Input is a lat-lon NetCDF file (from extract_gridded_field or compute_spatial_bias). '
-        'Automatically selects an appropriate colormap: diverging (RdBu_r) for bias fields, '
-        'sequential for positive-only fields. Units are auto-detected from the variable name '
-        'or can be specified explicitly. Optionally overlays summary statistics text. '
-        'Output is a PNG map.'
-    ),
-    inputs={
-        'field_file': Param('path', required=True,
-                            description='Input NetCDF file with a 2D lat-lon field'),
-        'variable': Param('str', required=False, default='',
-                          description='Variable name to plot. If omitted, uses the first data variable.'),
-        'title': Param('str', required=False, default='',
-                       description='Plot title. If omitted, uses the variable name.'),
-        'units': Param('str', required=False, default='',
-                       description='Units for the colorbar label. If omitted, auto-detected from variable name.'),
-        'stats_file': Param('path', required=False, default='',
-                            description='Optional zonal stats CSV to overlay on the map as text annotation.'),
-    },
-    outputs={
-        'plot_file': {'type': 'png', 'description': 'Map plot PNG'},
-    },
-)
+    Reads a lat-lon NetCDF file and produces a global map with coastlines
+    and a colorbar. Automatically selects an appropriate colormap: diverging
+    (PuOr_r) for bias fields, sequential (viridis) for positive-only fields.
+    Units are auto-detected from the variable name or can be specified explicitly.
+    Optionally overlays summary statistics from a CSV file as text annotation.
+    Suitable for model fields, observation fields, or bias maps.
 
+    Args:
+        field_file (Path): Input NetCDF file with a 2D lat-lon field.
+        variable (str, optional): Variable name to plot. If omitted, uses the first
+            data variable. Defaults to "".
+        title (str, optional): Plot title. If omitted, uses the variable name.
+            Defaults to "".
+        units (str, optional): Units for the colorbar label. If omitted, auto-detected
+            from variable name or NetCDF attributes. Defaults to "".
+        stats_file (str, optional): Optional zonal stats CSV file to overlay on the map
+            as text annotation. Supports both bias stats format (mean_bias, rmse,
+            spatial_correlation) and zonal stats format (region, weighted_mean).
+            Defaults to "".
 
-@esmflow_tool(SPEC)
-def run(config: dict) -> dict:
-    field_file = config['field_file']
-    variable = config['variable']
-    title = config['title']
-    units = config.get('units', '')
-    stats_file = config.get('stats_file', '')
-    output_dir = Path(config['output_dir'])
+    Returns:
+        Path: PNG map file.
+
+    Raises:
+        ValueError: If no data variables are found in the NetCDF file.
+    """
 
     ds = xr.open_dataset(field_file)
 
@@ -112,8 +97,6 @@ def run(config: dict) -> dict:
 
     # Determine colormap — diverging if data spans negative and positive
     finite_data = data[np.isfinite(data)]
-    has_neg = np.nanmin(finite_data) < 0
-    has_pos = np.nanmax(finite_data) > 0
     is_bias = 'bias' in vname.lower()
 
     if is_bias:
@@ -209,13 +192,14 @@ def run(config: dict) -> dict:
             print(f"  Warning: Could not overlay stats: {e}")
 
     # Save
-    safe_name = vname.lower().replace('+', '_')
-    out_path = output_dir / f'{safe_name}_map.png'
-    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    with tempfile.NamedTemporaryFile(delete=False) as fp:
+        out_path = fp.name
+        fig.savefig(out_path, dpi=150, bbox_inches='tight')
+
     plt.close(fig)
 
     print(f"  Saved: {out_path}")
 
     ds.close()
 
-    return {'plot_file': str(out_path)}
+    return out_path

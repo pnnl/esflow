@@ -1,66 +1,45 @@
-"""
-Extract a 2D gridded field from E3SM or observation NetCDF files.
-
-Computes time-mean (or sum of multiple variables) and outputs a simple
-lat-lon NetCDF file suitable for spatial comparison and plotting.
-"""
-
-import sys
 from pathlib import Path
 
-import numpy as np
 import xarray as xr
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import tempfile
 
-from core.base import esmflow_tool, ToolSpec, Param
-from core.e3sm import find_e3sm_files, open_e3sm_dataset, cftime_to_datetime
+from tools.core.e3sm import find_e3sm_files, open_e3sm_dataset
 
+def extract_gridded_field(
+    variable: str, 
+    data_dir: Path = None, 
+    case_name: str = '', 
+    component: str = '', 
+    obs_file: Path = None,
+    years: list[int] = None) -> Path:
+    """
+    Extract a 2D gridded field from E3SM or observation NetCDF files.
 
-SPEC = ToolSpec(
-    name='extract_gridded_field',
-    description=(
-        'Extract a 2D gridded field from E3SM output or observation NetCDF files. '
-        'Computes the time-mean over the specified years. '
-        'For composite variables, provide multiple names separated by "+" '
-        '(e.g., "QVEGE+QVEGT+QSOIL" to sum three ET components). '
-        'Input can be E3SM model output (provide data_dir, case_name, component) '
-        'or a single observation NetCDF file (provide obs_file). '
-        'Output is a simple lat-lon NetCDF with the time-averaged field.'
-    ),
-    inputs={
-        'data_dir': Param('path', required=False, default='',
-                          description='Base directory for E3SM output (use for model data)'),
-        'case_name': Param('str', required=False, default='',
-                           description='E3SM case name (use for model data)'),
-        'component': Param('str', required=False, default='',
-                           description='Model component: elm, mosart, eam (use for model data)'),
-        'obs_file': Param('path', required=False, default='',
-                          description='Path to observation NetCDF file (use for obs data)'),
-        'variable': Param('str', required=True,
-                          description='Variable name(s) to extract. Use "+" to sum multiple '
-                                      '(e.g., "RAIN+SNOW" or "QVEGE+QVEGT+QSOIL")'),
-        'years': Param('list[int]', required=False, default=None,
-                       description='Years to include (e.g., [2001]). If omitted, uses all available time steps.'),
-    },
-    outputs={
-        'field_file': {'type': 'netcdf', 'description': 'Time-averaged 2D field as lat-lon NetCDF'},
-    },
-)
+    Computes the time-mean over the specified years and outputs a simple
+    lat-lon NetCDF file suitable for spatial comparison and plotting.
+    For composite variables, provide multiple names separated by "+" to sum them
+    (e.g., "QVEGE+QVEGT+QSOIL" to sum three ET components).
 
+    Args:
+        variable (str): Variable name(s) to extract. Use "+" to sum multiple variables
+            (e.g., "RAIN+SNOW" or "QVEGE+QVEGT+QSOIL").
+        data_dir (Path, optional): Base directory for E3SM output (use for model data).
+        case_name (str, optional): E3SM case name (use for model data).
+        component (str, optional): Model component: elm, mosart, or eam (use for model data).
+        obs_file (Path, optional): Path to observation NetCDF file (use for obs data).
+        years (list[int], optional): Years to include (e.g., [2001]). If omitted, uses
+            all available time steps.
 
-@esmflow_tool(SPEC)
-def run(config: dict) -> dict:
-    data_dir = config['data_dir']
-    case_name = config['case_name']
-    component = config['component']
-    obs_file = config['obs_file']
-    variable = config['variable']
-    years = config['years']
-    output_dir = Path(config['output_dir'])
+    Returns:
+        Path: Time-averaged 2D field as a lat-lon NetCDF file.
+
+    Raises:
+        ValueError: If neither E3SM data (data_dir + case_name + component) nor obs_file
+            is provided, or if a requested variable is not found in the dataset.
+    """
 
     var_names = [v.strip() for v in variable.split('+')]
-    is_composite = len(var_names) > 1
 
     # Open dataset — either E3SM model or observation file
     if obs_file:
@@ -129,13 +108,13 @@ def run(config: dict) -> dict:
         out_ds.attrs['time_range'] = time_range
 
     # Save
-    safe_name = variable.replace('+', '_plus_').lower()
-    out_path = output_dir / f'{safe_name}_mean.nc'
-    out_ds.to_netcdf(out_path)
+    with tempfile.NamedTemporaryFile(delete=False) as fp:
+        out_path = fp.name
+        out_ds.to_netcdf(out_path)
 
     print(f"  Output shape: {dict(field_mean.sizes)}")
     print(f"  Saved: {out_path}")
 
     ds.close()
 
-    return {'field_file': str(out_path)}
+    return out_path

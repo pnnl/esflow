@@ -1,56 +1,34 @@
-"""
-Compute area-weighted spatial statistics from a gridded field.
-
-Supports global mean or latitude-band means. Uses landfrac weighting
-when available. Outputs a CSV with one row per region.
-"""
-
-import sys
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import tempfile
 
-from core.base import esmflow_tool, ToolSpec, Param
+def compute_zonal_stats(field_file: Path, variable: str = "", lat_bands: str = "") -> Path:
+    """
+    Compute area-weighted spatial statistics from a gridded field.
 
+    Supports two modes: (1) global mean — returns a single value, or
+    (2) latitude bands — splits the domain into bands and returns one value per band.
+    Uses landfrac weighting when available. Outputs a CSV with one row per region.
 
-SPEC = ToolSpec(
-    name='compute_zonal_stats',
-    description=(
-        'Compute area-weighted spatial statistics from a gridded NetCDF field. '
-        'Supports two modes: (1) global mean — returns a single value, '
-        '(2) latitude bands — splits the domain into bands and returns one value per band. '
-        'For latitude bands, provide band definitions as comma-separated "name:south:north" '
-        '(e.g., "tropical:-30:30,midlat_north:30:60,highlat_north:60:90"). '
-        'Uses landfrac weighting when available. '
-        'Output CSV has columns: region, mean, area_weighted_mean.'
-    ),
-    inputs={
-        'field_file': Param('path', required=True,
-                            description='Input NetCDF file with a 2D field (from extract_gridded_field)'),
-        'variable': Param('str', required=False, default='',
-                          description='Variable name in the NetCDF file. If omitted, uses the first data variable.'),
-        'lat_bands': Param('str', required=False, default='',
-                           description='Latitude band definitions as comma-separated "name:south:north" '
-                                       '(e.g., "boreal:55:90,temperate:30:55,tropical:0:30"). '
-                                       'Leave empty for global mean only.'),
-    },
-    outputs={
-        'stats_file': {'type': 'csv', 'description': 'CSV with columns: region, mean, area_weighted_mean'},
-    },
-)
+    Args:
+        field_file (Path): Input NetCDF file with a 2D field (from extract_gridded_field).
+        variable (str, optional): Variable name in the NetCDF file. If omitted, uses the
+            first data variable. Defaults to "".
+        lat_bands (str, optional): Latitude band definitions as comma-separated 
+            "name:south:north" (e.g., "boreal:55:90,temperate:30:55,tropical:0:30").
+            Leave empty for global mean only. Defaults to "".
 
+    Returns:
+        Path: Zonal stats CSV file with columns: region, mean, area_weighted_mean.
 
-@esmflow_tool(SPEC)
-def run(config: dict) -> dict:
-    field_file = config['field_file']
-    variable = config['variable']
-    lat_bands_str = config['lat_bands']
-    output_dir = Path(config['output_dir'])
-
+    Raises:
+        ValueError: If the variable is not found in the NetCDF file or if band
+            definitions have invalid format.
+    """
     ds = xr.open_dataset(field_file)
 
     # Determine variable name
@@ -88,9 +66,9 @@ def run(config: dict) -> dict:
         cos_weights = cos_weights * lf
 
     # Parse latitude bands
-    if lat_bands_str:
+    if lat_bands:
         bands = []
-        for band_def in lat_bands_str.split(','):
+        for band_def in lat_bands.split(','):
             parts = band_def.strip().split(':')
             if len(parts) != 3:
                 raise ValueError(
@@ -136,9 +114,10 @@ def run(config: dict) -> dict:
         print(f"  {band['name']}: mean={simple_mean:.6e}, weighted={weighted_mean:.6e}")
 
     df = pd.DataFrame(results)
-    out_path = output_dir / 'zonal_stats.csv'
-    df.to_csv(out_path, index=False)
+    with tempfile.NamedTemporaryFile(delete=False) as fp:
+        out_path = fp.name
+        df.to_csv(out_path, index=False)
 
     ds.close()
 
-    return {'stats_file': str(out_path)}
+    return out_path
