@@ -1,0 +1,84 @@
+name: Basin Streamflow Validation 1985-1989 (Six Major Rivers)
+description: 'Match GRDC gauges to E3SM MOSART grid, extract simulated and observed
+  discharge
+
+  for 1985-1989, compute validation metrics (RMSE, NSE, KGE, PBIAS), and produce
+
+  per-basin figures (map + sim-vs-obs time series) for Amazon (3629000), Missouri
+  (4121801),
+
+  Columbia (4115200), Danube (6742900), Mekong (2969100), and Orange (1159100).
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_protocol/task_05_basin_streamflow/run3_output
+  style: cream_ink
+  component: mosart
+  river_var: RIVER_DISCHARGE_OVER_LAND_LIQ
+  gauge_metadata: ./data/sample/obs/gauge_metadata.csv
+  obs_dir: ./data/sample/obs/streamflow
+  basins_file: ./data/sample/obs/basin_polygons.geojson
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+steps:
+- id: load_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.gauge_metadata}
+  outputs:
+    metadata_file: gauge_metadata.validated.csv
+- id: match_gauges
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+  outputs:
+    matched_file: gauges.matched.csv
+- id: extract_sim_discharge
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+    variable: ${settings.river_var}
+    locations_file: ${match_gauges.outputs.matched_file}
+    years: ${settings.years}
+    frequency: monthly
+  outputs:
+    timeseries_file: sim_discharge_1985-1989.csv
+- id: extract_obs_discharge
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.obs_dir}
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    years: ${settings.years}
+    gauge_ids: ${settings.gauge_ids}
+  outputs:
+    timeseries_file: obs_discharge_1985-1989.csv
+- id: compute_validation_metrics
+  tool: compute_metrics
+  params:
+    sim_file: ${extract_sim_discharge.outputs.timeseries_file}
+    obs_file: ${extract_obs_discharge.outputs.timeseries_file}
+  outputs:
+    metrics_file: metrics_1985-1989.csv
+- id: plot_basin_figures
+  tool: plot_basin_timeseries
+  params:
+    basins_file: ${settings.basins_file}
+    sim_file: ${extract_sim_discharge.outputs.timeseries_file}
+    obs_file: ${extract_obs_discharge.outputs.timeseries_file}
+    locations_file: ${load_metadata.outputs.metadata_file}
+    gauge_ids: ${settings.gauge_ids}
+    metrics_file: ${compute_validation_metrics.outputs.metrics_file}
+  outputs:
+    plot_files: basin_timeseries_plots.json

@@ -1,0 +1,165 @@
+```yaml
+name: "Integrated Water Cycle Evaluation"
+description: |
+  This workflow performs an integrated water cycle evaluation for E3SM over the period 1985-1989 across six major river basins. It extracts model and observation fields, clips them to basin means, computes streamflow FDC metrics, combines all per-basin metrics into a summary table, and visualizes the results.
+
+settings:
+  case_name: "sample.v3.LR.historical"
+  data_dir: "./data/sample/e3sm/"
+  output_dir: "./output/task07_integrated_diagnostic"
+  style: cream_ink
+  basins_file: "./data/sample/obs/basin_polygons.geojson"
+  gauge_metadata: "./data/sample/obs/gauge_metadata.csv"
+  obs_dir: "./data/sample/obs/streamflow/"
+
+steps:
+  - id: extract_model_fields
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "RAIN+SNOW,QVEGE+QVEGT+QSOIL,QRUNOFF"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      model_precip_file: "${output_dir}/model_precip.nc"
+      model_et_file: "${output_dir}/model_et.nc"
+      model_runoff_file: "${output_dir}/model_runoff.nc"
+
+  - id: fetch_gpcc_precip
+    tool: fetch_ilamb_data
+    params:
+      variable: "pr"
+      dataset: "GPCCv2018"
+    outputs:
+      data_file: "${output_dir}/gpcc_precip.nc"
+
+  - id: fetch_modis_et
+    tool: fetch_ilamb_data
+    params:
+      variable: "evspsbl"
+      dataset: "MODIS"
+    outputs:
+      data_file: "${output_dir}/modis_et.nc"
+
+  - id: extract_obs_fields
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_gpcc_precip.outputs.data_file}"
+      variable: "pr"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      obs_precip_file: "${output_dir}/obs_precip.nc"
+
+  - id: extract_obs_et
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_modis_et.outputs.data_file}"
+      variable: "et"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      obs_et_file: "${output_dir}/obs_et.nc"
+
+  - id: fetch_lora_runoff
+    tool: fetch_ilamb_data
+    params:
+      variable: "mrro"
+      dataset: "LORA"
+    outputs:
+      data_file: "${output_dir}/lora_runoff.nc"
+
+  - id: extract_obs_runoff
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_lora_runoff.outputs.data_file}"
+      variable: "mrro"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      obs_runoff_file: "${output_dir}/obs_runoff.nc"
+
+  - id: clip_model_to_basins
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_model_fields.outputs.model_precip_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+    outputs:
+      basin_means_file: "${output_dir}/model_basin_precip.csv"
+
+  - id: clip_obs_to_basins
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_obs_fields.outputs.obs_precip_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+    outputs:
+      basin_means_file: "${output_dir}/obs_basin_precip.csv"
+
+  - id: match_gauges_to_grid
+    tool: match_to_grid
+    params:
+      gauge_metadata: "${settings.gauge_metadata}"
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+    outputs:
+      matched_file: "${output_dir}/matched_gauges.csv"
+
+  - id: extract_simulated_discharge
+    tool: extract_e3sm_timeseries
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+      variable: "RIVER_DISCHARGE_OVER_LAND_LIQ"
+      locations_file: "${match_gauges_to_grid.outputs.matched_file}"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      timeseries_file: "${output_dir}/simulated_discharge.csv"
+
+  - id: extract_observed_discharge
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.obs_dir}"
+      gauge_metadata: "${settings.gauge_metadata}"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      timeseries_file: "${output_dir}/observed_discharge.csv"
+
+  - id: compute_fdc_metrics
+    tool: compute_fdc_metrics
+    params:
+      sim_file: "${extract_simulated_discharge.outputs.timeseries_file}"
+      obs_file: "${extract_observed_discharge.outputs.timeseries_file}"
+    outputs:
+      metrics_file: "${output_dir}/fdc_metrics.csv"
+      fdc_file: "${output_dir}/fdc_data.csv"
+
+  - id: compute_basin_budget
+    tool: compute_basin_budget
+    params:
+      model_precip_file: "${clip_model_to_basins.outputs.basin_means_file}"
+      model_et_file: "${extract_model_fields.outputs.model_et_file}"
+      model_runoff_file: "${extract_model_fields.outputs.model_runoff_file}"
+      obs_precip_file: "${clip_obs_to_basins.outputs.basin_means_file}"
+      obs_et_file: "${extract_obs_et.outputs.obs_et_file}"
+      obs_runoff_file: "${extract_obs_runoff.outputs.obs_runoff_file}"
+      fdc_metrics_file: "${compute_fdc_metrics.outputs.metrics_file}"
+      locations_file: "${settings.gauge_metadata}"
+    outputs:
+      budget_file: "${output_dir}/basin_budget.csv"
+
+  - id: plot_basin_radar
+    tool: plot_basin_radar
+    params:
+      budget_file: "${compute_basin_budget.outputs.budget_file}"
+    outputs:
+      plot_file: "${output_dir}/basin_radar.png"
+
+  - id: plot_basin_budget_comparison
+    tool: plot_basin_budget_comparison
+    params:
+      budget_file: "${compute_basin_budget.outputs.budget_file}"
+    outputs:
+      plot_file: "${output_dir}/basin_budget_comparison.png"
+```

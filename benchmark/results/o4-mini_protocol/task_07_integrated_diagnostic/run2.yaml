@@ -1,0 +1,237 @@
+name: Task07 Integrated Water Cycle Diagnostic
+description: 'Performs a per-basin integrated water cycle evaluation for E3SM over
+  1985-1989
+
+  across six major river basins (Amazon, Missouri, Columbia, Danube, Mekong, Orange).
+
+  Extracts climatological model and observation fields for P, ET, and runoff;
+
+  computes basin-mean values; evaluates streamflow FDC metrics; and summarizes
+
+  and visualizes per-basin water budget diagnostics.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_protocol/task_07_integrated_diagnostic/run2_output
+  style: cream_ink
+  basins_file: ./data/sample/obs/basin_polygons.geojson
+steps:
+- id: extract_model_precip
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: RAIN+SNOW
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: model_precip_clim.nc
+- id: extract_model_et
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QVEGE+QVEGT+QSOIL
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: model_et_clim.nc
+- id: extract_model_runoff
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QRUNOFF
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: model_runoff_clim.nc
+- id: fetch_obs_precip
+  tool: fetch_ilamb_data
+  params:
+    variable: pr
+    dataset: GPCCv2018
+  outputs:
+    data_file: obs_pr_gpccv2018.nc
+- id: extract_obs_precip
+  tool: extract_gridded_field
+  params:
+    obs_file: ${fetch_obs_precip.outputs.data_file}
+    variable: pr
+  outputs:
+    field_file: obs_precip_clim.nc
+- id: fetch_obs_et
+  tool: fetch_ilamb_data
+  params:
+    variable: evspsbl
+    dataset: MODIS
+  outputs:
+    data_file: obs_et_modis.nc
+- id: extract_obs_et
+  tool: extract_gridded_field
+  params:
+    obs_file: ${fetch_obs_et.outputs.data_file}
+    variable: et
+  outputs:
+    field_file: obs_et_clim.nc
+- id: fetch_obs_runoff
+  tool: fetch_ilamb_data
+  params:
+    variable: mrro
+    dataset: LORA
+  outputs:
+    data_file: obs_runoff_lora.nc
+- id: extract_obs_runoff
+  tool: extract_gridded_field
+  params:
+    obs_file: ${fetch_obs_runoff.outputs.data_file}
+    variable: mrro
+  outputs:
+    field_file: obs_runoff_clim.nc
+- id: clip_model_precip
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_model_precip.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: model_precip_basin_means.csv
+- id: clip_model_et
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_model_et.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: model_et_basin_means.csv
+- id: clip_model_runoff
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_model_runoff.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: model_runoff_basin_means.csv
+- id: clip_obs_precip
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_obs_precip.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: obs_precip_basin_means.csv
+- id: clip_obs_et
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_obs_et.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: obs_et_basin_means.csv
+- id: clip_obs_runoff
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_obs_runoff.outputs.field_file}
+    basins_file: ${settings.basins_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: obs_runoff_basin_means.csv
+- id: load_obs_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ./data/sample/obs/gauge_metadata.csv
+  outputs:
+    metadata_file: validated_gauge_metadata.csv
+    n_gauges: n_gauges
+- id: match_gauges
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_obs_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+  outputs:
+    matched_file: matched_gauges.csv
+    n_matched: n_matched
+- id: extract_model_streamflow
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+    variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+    locations_file: ${match_gauges.outputs.matched_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    timeseries_file: sim_streamflow_1985_1989.csv
+    n_locations: n_locations
+- id: extract_obs_streamflow
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ./data/sample/obs/streamflow/
+    gauge_metadata: ${load_obs_metadata.outputs.metadata_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    gauge_ids: ''
+  outputs:
+    timeseries_file: obs_streamflow_1985_1989.csv
+    n_gauges: n_gauges_obs
+- id: compute_streamflow_fdc_metrics
+  tool: compute_fdc_metrics
+  params:
+    sim_file: ${extract_model_streamflow.outputs.timeseries_file}
+    obs_file: ${extract_obs_streamflow.outputs.timeseries_file}
+  outputs:
+    metrics_file: fdc_metrics.csv
+    fdc_file: fdc_data.csv
+- id: compute_basin_budget
+  tool: compute_basin_budget
+  params:
+    model_precip_file: ${clip_model_precip.outputs.basin_means_file}
+    model_et_file: ${clip_model_et.outputs.basin_means_file}
+    model_runoff_file: ${clip_model_runoff.outputs.basin_means_file}
+    obs_precip_file: ${clip_obs_precip.outputs.basin_means_file}
+    obs_et_file: ${clip_obs_et.outputs.basin_means_file}
+    obs_runoff_file: ${clip_obs_runoff.outputs.basin_means_file}
+    fdc_metrics_file: ${compute_streamflow_fdc_metrics.outputs.metrics_file}
+    locations_file: ${load_obs_metadata.outputs.metadata_file}
+  outputs:
+    budget_file: basin_budget_summary.csv
+- id: plot_budget_comparison
+  tool: plot_basin_budget_comparison
+  params:
+    budget_file: ${compute_basin_budget.outputs.budget_file}
+  outputs:
+    plot_file: basin_budget_comparison.png
+- id: plot_basin_radar
+  tool: plot_basin_radar
+  params:
+    budget_file: ${compute_basin_budget.outputs.budget_file}
+  outputs:
+    plot_file: basin_diagnostic_radar.png

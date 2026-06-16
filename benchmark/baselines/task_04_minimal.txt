@@ -1,0 +1,1 @@
+Compare the statistical distribution of E3SM simulated river discharge against gauge observations for 1985-1989 using flow duration curves. Compute the Wasserstein distance for each gauge and produce FDC comparison plots for six major rivers.

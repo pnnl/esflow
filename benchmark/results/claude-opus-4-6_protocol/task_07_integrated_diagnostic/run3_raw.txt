@@ -1,0 +1,246 @@
+name: "Integrated Water Cycle Diagnostic"
+description: |
+  Per-basin integrated water cycle evaluation for E3SM over 1985-1989 across
+  six major river basins (Amazon, Missouri, Columbia, Danube, Mekong, Orange).
+  Diagnoses bias origins by comparing model P, ET, Q fields against GPCC, MODIS,
+  and LORA observations, computing flow duration curve metrics for streamflow,
+  and combining everything into a per-basin summary table with bar and radar charts.
+
+settings:
+  case_name: "sample.v3.LR.historical"
+  data_dir: "./data/sample/e3sm/"
+  output_dir: "./output/task07_integrated_diagnostic"
+  basins_file: "./data/sample/obs/basin_polygons.geojson"
+  gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+  years: [1985, 1986, 1987, 1988, 1989]
+  gauge_metadata: "./data/sample/obs/gauge_metadata.csv"
+  obs_streamflow_dir: "./data/sample/obs/streamflow/"
+
+steps:
+  # ── Part 1: Extract model climatological fields from ELM ──────────────────
+
+  - id: extract_model_precip
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "RAIN+SNOW"
+      years: ${settings.years}
+    outputs:
+      field_file: model_precip_field.nc
+
+  - id: extract_model_et
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "QVEGE+QVEGT+QSOIL"
+      years: ${settings.years}
+    outputs:
+      field_file: model_et_field.nc
+
+  - id: extract_model_runoff
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "QRUNOFF"
+      years: ${settings.years}
+    outputs:
+      field_file: model_runoff_field.nc
+
+  # ── Part 2: Fetch ILAMB observations and extract climatological fields ────
+
+  - id: fetch_gpcc_precip
+    tool: fetch_ilamb_data
+    params:
+      variable: "pr"
+      dataset: "GPCCv2018"
+    outputs:
+      data_file: gpcc_pr_raw.nc
+
+  - id: fetch_modis_et
+    tool: fetch_ilamb_data
+    params:
+      variable: "evspsbl"
+      dataset: "MODIS"
+    outputs:
+      data_file: modis_et_raw.nc
+
+  - id: fetch_lora_runoff
+    tool: fetch_ilamb_data
+    params:
+      variable: "mrro"
+      dataset: "LORA"
+    outputs:
+      data_file: lora_mrro_raw.nc
+
+  - id: extract_obs_precip
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_gpcc_precip.outputs.data_file}"
+      variable: "pr"
+      years: ${settings.years}
+    outputs:
+      field_file: obs_precip_field.nc
+
+  - id: extract_obs_et
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_modis_et.outputs.data_file}"
+      variable: "et"
+      years: ${settings.years}
+    outputs:
+      field_file: obs_et_field.nc
+
+  - id: extract_obs_runoff
+    tool: extract_gridded_field
+    params:
+      obs_file: "${fetch_lora_runoff.outputs.data_file}"
+      variable: "mrro"
+      years: ${settings.years}
+    outputs:
+      field_file: obs_runoff_field.nc
+
+  # ── Part 3: Clip gridded fields to basin-averaged values ──────────────────
+
+  - id: basin_mean_model_precip
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_model_precip.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_model_precip.csv
+
+  - id: basin_mean_model_et
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_model_et.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_model_et.csv
+
+  - id: basin_mean_model_runoff
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_model_runoff.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_model_runoff.csv
+
+  - id: basin_mean_obs_precip
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_obs_precip.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_obs_precip.csv
+
+  - id: basin_mean_obs_et
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_obs_et.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_obs_et.csv
+
+  - id: basin_mean_obs_runoff
+    tool: extract_basin_mean
+    params:
+      field_file: "${extract_obs_runoff.outputs.field_file}"
+      basins_file: "${settings.basins_file}"
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      basin_means_file: basin_obs_runoff.csv
+
+  # ── Part 4: Streamflow FDC metrics ───────────────────────────────────────
+
+  - id: load_gauge_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.gauge_metadata}"
+    outputs:
+      metadata_file: gauge_metadata_validated.csv
+      n_gauges: n_gauges.txt
+
+  - id: match_gauges_mosart
+    tool: match_to_grid
+    params:
+      gauge_metadata: "${load_gauge_metadata.outputs.metadata_file}"
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+    outputs:
+      matched_file: matched_gauges_mosart.csv
+      n_matched: n_matched.txt
+
+  - id: extract_sim_discharge
+    tool: extract_e3sm_timeseries
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+      variable: "RIVER_DISCHARGE_OVER_LAND_LIQ"
+      locations_file: "${match_gauges_mosart.outputs.matched_file}"
+      years: ${settings.years}
+    outputs:
+      timeseries_file: sim_discharge_ts.csv
+      n_locations: n_sim_locations.txt
+
+  - id: extract_obs_discharge
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.obs_streamflow_dir}"
+      gauge_metadata: "${load_gauge_metadata.outputs.metadata_file}"
+      years: ${settings.years}
+      gauge_ids: "${settings.gauge_ids}"
+    outputs:
+      timeseries_file: obs_discharge_ts.csv
+      n_gauges: n_obs_gauges.txt
+
+  - id: compute_fdc_metrics
+    tool: compute_fdc_metrics
+    params:
+      sim_file: "${extract_sim_discharge.outputs.timeseries_file}"
+      obs_file: "${extract_obs_discharge.outputs.timeseries_file}"
+    outputs:
+      metrics_file: fdc_metrics.csv
+      fdc_file: fdc_percentiles.csv
+
+  # ── Part 5: Combine into budget table and visualise ──────────────────────
+
+  - id: compute_basin_budget
+    tool: compute_basin_budget
+    params:
+      model_precip_file: "${basin_mean_model_precip.outputs.basin_means_file}"
+      model_et_file: "${basin_mean_model_et.outputs.basin_means_file}"
+      model_runoff_file: "${basin_mean_model_runoff.outputs.basin_means_file}"
+      obs_precip_file: "${basin_mean_obs_precip.outputs.basin_means_file}"
+      obs_et_file: "${basin_mean_obs_et.outputs.basin_means_file}"
+      obs_runoff_file: "${basin_mean_obs_runoff.outputs.basin_means_file}"
+      fdc_metrics_file: "${compute_fdc_metrics.outputs.metrics_file}"
+      locations_file: "${load_gauge_metadata.outputs.metadata_file}"
+    outputs:
+      budget_file: basin_budget_summary.csv
+
+  - id: plot_budget_comparison
+    tool: plot_basin_budget_comparison
+    params:
+      budget_file: "${compute_basin_budget.outputs.budget_file}"
+    outputs:
+      plot_file: basin_budget_comparison.png
+
+  - id: plot_radar_diagnostic
+    tool: plot_basin_radar
+    params:
+      budget_file: "${compute_basin_budget.outputs.budget_file}"
+    outputs:
+      plot_file: basin_radar_diagnostic.png

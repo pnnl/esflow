@@ -1,0 +1,331 @@
+import os
+import glob
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-opus-4-6_baseline/task_02_seasonal_runoff/run3_output"
+os.makedirs(output_dir, exist_ok=True)
+
+# Data paths
+case_name = "sample.v3.LR.historical"
+lnd_dir = "./data/sample/e3sm/lnd/"
+
+# Gather all ELM monthly files for 1985-1989
+file_pattern = os.path.join(lnd_dir, f"{case_name}.elm.h0.*.nc")
+all_files = sorted(glob.glob(file_pattern))
+
+# Filter to 1985-1989
+years = range(1985, 1990)
+selected_files = []
+for f in all_files:
+    basename = os.path.basename(f)
+    # Extract YYYY-MM from filename
+    parts = basename.replace(".nc", "").split(".")
+    date_str = parts[-1]  # e.g., "1985-01"
+    year = int(date_str.split("-")[0])
+    if year in years:
+        selected_files.append(f)
+
+print(f"Found {len(selected_files)} ELM files for 1985-1989")
+for f in selected_files[:5]:
+    print(f"  {os.path.basename(f)}")
+if len(selected_files) > 5:
+    print(f"  ... and {len(selected_files) - 5} more")
+
+# Load the data
+try:
+    ds = xr.open_mfdataset(selected_files, combine='by_coords', decode_times=True)
+    print(f"\nDataset dimensions: {dict(ds.dims)}")
+    print(f"Available variables: {list(ds.data_vars)[:20]}")
+except Exception as e:
+    print(f"Error loading data: {e}")
+    raise
+
+# Extract QRUNOFF
+try:
+    qrunoff = ds['QRUNOFF']
+    print(f"\nQRUNOFF shape: {qrunoff.shape}")
+    print(f"QRUNOFF units: {qrunoff.attrs.get('units', 'unknown')}")
+    print(f"QRUNOFF long_name: {qrunoff.attrs.get('long_name', 'unknown')}")
+except KeyError:
+    print("QRUNOFF not found. Available variables:")
+    print(list(ds.data_vars))
+    raise
+
+# Compute climatological mean (time average over 1985-1989)
+qrunoff_mean = qrunoff.mean(dim='time')
+print(f"\nClimatological mean QRUNOFF shape: {qrunoff_mean.shape}")
+
+# Get lat/lon coordinates
+# ELM output may use 'lat' and 'lon' or may be unstructured
+if 'lat' in ds.coords and 'lon' in ds.coords:
+    lat = ds['lat']
+    lon = ds['lon']
+elif 'lat' in ds and 'lon' in ds:
+    lat = ds['lat']
+    lon = ds['lon']
+else:
+    print("Available coordinates:", list(ds.coords))
+    print("Available dimensions:", list(ds.dims))
+    raise ValueError("Cannot find lat/lon coordinates")
+
+print(f"Lat shape: {lat.shape}, Lon shape: {lon.shape}")
+
+# Check if the data is on a regular grid or unstructured
+is_structured = len(qrunoff_mean.dims) == 2
+
+# Try to get area weights
+area_var = None
+for vname in ['area', 'AREA', 'grid_area', 'cell_area', 'landfrac', 'LANDFRAC']:
+    if vname in ds:
+        print(f"Found {vname} variable")
+
+# Get land fraction and area for proper weighting
+try:
+    landfrac = ds['landfrac'] if 'landfrac' in ds else ds.get('LANDFRAC', None)
+    area = ds['area'] if 'area' in ds else ds.get('AREA', None)
+    
+    if landfrac is not None:
+        # If landfrac has time dimension, take first time step
+        if 'time' in landfrac.dims:
+            landfrac = landfrac.isel(time=0)
+        print(f"landfrac shape: {landfrac.shape}, range: [{float(landfrac.min()):.3f}, {float(landfrac.max()):.3f}]")
+    
+    if area is not None:
+        if 'time' in area.dims:
+            area = area.isel(time=0)
+        print(f"area shape: {area.shape}, units: {area.attrs.get('units', 'unknown')}")
+except Exception as e:
+    print(f"Warning getting area/landfrac: {e}")
+    landfrac = None
+    area = None
+
+# Compute area-weighted global mean
+if is_structured:
+    # Regular grid - use cos(lat) weighting if no area variable
+    if area is not None and landfrac is not None:
+        weights = area * landfrac
+        weights = weights.where(~np.isnan(qrunoff_mean), 0)
+        global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+    elif area is not None:
+        weights = area.where(~np.isnan(qrunoff_mean), 0)
+        global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+    else:
+        # cos(lat) weighting
+        cos_lat = np.cos(np.deg2rad(lat))
+        if cos_lat.ndim == 1:
+            weights = cos_lat
+            global_mean = float(qrunoff_mean.weighted(weights).mean())
+        else:
+            weights = cos_lat.where(~np.isnan(qrunoff_mean), 0)
+            global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+else:
+    # Unstructured grid
+    if area is not None and landfrac is not None:
+        weights = area * landfrac
+        mask = ~np.isnan(qrunoff_mean)
+        weights = weights.where(mask, 0)
+        global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+    elif area is not None:
+        mask = ~np.isnan(qrunoff_mean)
+        weights = area.where(mask, 0)
+        global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+    else:
+        # Fall back to simple cos(lat) weighting
+        cos_lat = np.cos(np.deg2rad(lat))
+        mask = ~np.isnan(qrunoff_mean)
+        weights = cos_lat.where(mask, 0)
+        global_mean = float((qrunoff_mean * weights).sum() / weights.sum())
+
+# Convert from mm/s to mm/day for readability
+qrunoff_units = qrunoff.attrs.get('units', 'mm/s')
+conversion_factor = 86400.0  # s to day
+global_mean_mmday = global_mean * conversion_factor
+
+print(f"\nGlobal area-weighted mean QRUNOFF: {global_mean:.6e} {qrunoff_units}")
+print(f"Global area-weighted mean QRUNOFF: {global_mean_mmday:.4f} mm/day")
+print(f"Global area-weighted mean QRUNOFF: {global_mean_mmday * 365.25:.2f} mm/year")
+
+# Also compute basic statistics
+qrunoff_mean_vals = qrunoff_mean.values
+valid_vals = qrunoff_mean_vals[~np.isnan(qrunoff_mean_vals)]
+print(f"\nGrid statistics (in {qrunoff_units}):")
+print(f"  Min:    {np.min(valid_vals):.6e}")
+print(f"  Max:    {np.max(valid_vals):.6e}")
+print(f"  Median: {np.median(valid_vals):.6e}")
+print(f"  Std:    {np.std(valid_vals):.6e}")
+
+# Save statistics to CSV
+try:
+    import pandas as pd
+    stats_dict = {
+        'Statistic': [
+            'Global area-weighted mean (mm/s)',
+            'Global area-weighted mean (mm/day)',
+            'Global area-weighted mean (mm/year)',
+            'Grid min (mm/s)',
+            'Grid max (mm/s)',
+            'Grid median (mm/s)',
+            'Grid std (mm/s)',
+            'Number of valid grid cells',
+            'Period'
+        ],
+        'Value': [
+            f"{global_mean:.6e}",
+            f"{global_mean_mmday:.4f}",
+            f"{global_mean_mmday * 365.25:.2f}",
+            f"{np.min(valid_vals):.6e}",
+            f"{np.max(valid_vals):.6e}",
+            f"{np.median(valid_vals):.6e}",
+            f"{np.std(valid_vals):.6e}",
+            f"{len(valid_vals)}",
+            "1985-1989"
+        ]
+    }
+    stats_df = pd.DataFrame(stats_dict)
+    stats_csv = os.path.join(output_dir, "qrunoff_climatology_stats.csv")
+    stats_df.to_csv(stats_csv, index=False)
+    print(f"\nSaved statistics to {stats_csv}")
+except Exception as e:
+    print(f"Error saving CSV: {e}")
+
+# Save the climatological mean as NetCDF
+try:
+    out_ds = xr.Dataset()
+    out_ds['QRUNOFF_clim_mean'] = qrunoff_mean
+    out_ds['QRUNOFF_clim_mean'].attrs = {
+        'long_name': 'Climatological mean total runoff (1985-1989)',
+        'units': qrunoff_units,
+        'description': 'Time-averaged QRUNOFF from E3SM ELM over 1985-1989'
+    }
+    out_ds.attrs = {
+        'title': 'E3SM ELM Climatological Mean Runoff 1985-1989',
+        'source': case_name,
+        'global_area_weighted_mean_mm_s': global_mean,
+        'global_area_weighted_mean_mm_day': global_mean_mmday,
+    }
+    nc_out = os.path.join(output_dir, "qrunoff_climatology_1985_1989.nc")
+    out_ds.to_netcdf(nc_out)
+    print(f"Saved NetCDF to {nc_out}")
+except Exception as e:
+    print(f"Error saving NetCDF: {e}")
+
+# Create the map
+try:
+    # Prepare data for plotting
+    qrunoff_mean_mmday = qrunoff_mean * conversion_factor  # Convert to mm/day
+    
+    if is_structured:
+        # Regular grid
+        lon_vals = lon.values
+        lat_vals = lat.values
+        data_vals = qrunoff_mean_mmday.values
+        
+        # Handle longitude wrapping if needed
+        if lon_vals.ndim == 1 and lat_vals.ndim == 1:
+            lon_2d, lat_2d = np.meshgrid(lon_vals, lat_vals)
+        else:
+            lon_2d = lon_vals
+            lat_2d = lat_vals
+        
+        fig = plt.figure(figsize=(14, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.Robinson())
+        ax.set_global()
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle='--')
+        
+        # Use pcolormesh for regular grid
+        vmin, vmax = 0, np.nanpercentile(qrunoff_mean_mmday.values, 95)
+        if vmax < 1:
+            vmax = np.nanpercentile(qrunoff_mean_mmday.values, 99)
+        if vmax < 0.01:
+            vmax = float(np.nanmax(qrunoff_mean_mmday.values))
+        
+        im = ax.pcolormesh(
+            lon_2d, lat_2d, data_vals,
+            transform=ccrs.PlateCarree(),
+            cmap='YlGnBu',
+            vmin=0, vmax=max(vmax, 0.1),
+            shading='auto'
+        )
+        
+    else:
+        # Unstructured grid - scatter plot
+        lon_vals = lon.values.flatten()
+        lat_vals = lat.values.flatten()
+        data_vals = (qrunoff_mean_mmday.values).flatten()
+        
+        # Remove NaN values
+        valid = ~np.isnan(data_vals)
+        lon_plot = lon_vals[valid]
+        lat_plot = lat_vals[valid]
+        data_plot = data_vals[valid]
+        
+        fig = plt.figure(figsize=(14, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.Robinson())
+        ax.set_global()
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle='--')
+        
+        vmax = np.percentile(data_plot, 95)
+        if vmax < 0.1:
+            vmax = np.percentile(data_plot, 99)
+        if vmax < 0.01:
+            vmax = float(np.max(data_plot))
+        
+        im = ax.scatter(
+            lon_plot, lat_plot,
+            c=data_plot,
+            s=0.5,
+            transform=ccrs.PlateCarree(),
+            cmap='YlGnBu',
+            vmin=0, vmax=max(vmax, 0.1),
+            edgecolors='none'
+        )
+    
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, shrink=0.7, aspect=40)
+    cbar.set_label('Total Runoff (mm/day)', fontsize=12)
+    
+    # Title
+    ax.set_title('E3SM ELM Climatological Mean Total Runoff (1985-1989)', fontsize=14, fontweight='bold')
+    
+    # Overlay global statistics as text
+    stats_text = (
+        f"Global Area-Weighted Mean:\n"
+        f"  {global_mean_mmday:.4f} mm/day\n"
+        f"  ({global_mean_mmday * 365.25:.1f} mm/year)\n"
+        f"Grid Min: {np.min(valid_vals) * conversion_factor:.4f} mm/day\n"
+        f"Grid Max: {np.max(valid_vals) * conversion_factor:.2f} mm/day"
+    )
+    
+    # Add text box
+    props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.85, edgecolor='gray')
+    ax.text(
+        0.02, 0.98, stats_text,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment='top',
+        fontfamily='monospace',
+        bbox=props
+    )
+    
+    plt.tight_layout()
+    
+    map_file = os.path.join(output_dir, "qrunoff_climatology_map.png")
+    fig.savefig(map_file, dpi=200, bbox_inches='tight')
+    print(f"Saved map to {map_file}")
+    plt.close(fig)
+    
+except Exception as e:
+    print(f"Error creating map: {e}")
+    import traceback
+    traceback.print_exc()
+
+# Close dataset
+ds.close()
+
+print("\nDone! All outputs saved to:", output_dir)

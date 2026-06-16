@@ -1,0 +1,1 @@
+Extract the irrigation water withdrawal (QIRRIG) from ELM output for 1985-1989, compute the global mean climatology, and produce a global map showing the mean irrigation withdrawal rate. Save the results as a CSV and a map. Use output directory "./output/test_irrigation". The model output files are in "./data/sample/model/" with the naming pattern "*.elm.h0.*.nc".

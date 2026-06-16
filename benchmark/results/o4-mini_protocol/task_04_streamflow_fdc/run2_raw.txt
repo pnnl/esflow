@@ -1,0 +1,75 @@
+name: "Streamflow FDC Distribution Comparison 1985-1989"
+description: |
+  Compare the statistical distribution of simulated river discharge from E3SM MOSART
+  against observations for 1985-1989. Matches gauges to the model grid, extracts daily
+  time series, computes flow duration curve metrics, and generates an FDC comparison figure
+  for selected gauges.
+
+settings:
+  case_name: "sample.v3.LR.historical"
+  data_dir: "./data/sample"
+  output_dir: "./output/task04_streamflow_fdc"
+  style: cream_ink
+
+steps:
+  - id: load_obs_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.data_dir}/obs/gauge_metadata.csv"
+    outputs:
+      metadata_file: validated_gauge_metadata.csv
+      n_gauges: n_gauges.txt
+
+  - id: match_gauges
+    tool: match_to_grid
+    params:
+      gauge_metadata: "${load_obs_metadata.outputs.metadata_file}"
+      data_dir: "${settings.data_dir}/e3sm"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+    outputs:
+      matched_file: matched_gauges.csv
+      n_matched: n_matched.txt
+
+  - id: extract_obs_timeseries
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.data_dir}/obs/streamflow"
+      gauge_metadata: "${load_obs_metadata.outputs.metadata_file}"
+      years: [1985, 1989]
+    outputs:
+      timeseries_file: obs_timeseries.csv
+      n_gauges: obs_n_gauges.txt
+
+  - id: extract_sim_timeseries
+    tool: extract_e3sm_timeseries
+    params:
+      data_dir: "${settings.data_dir}/e3sm"
+      case_name: "${settings.case_name}"
+      component: "mosart"
+      variable: "RIVER_DISCHARGE_OVER_LAND_LIQ"
+      locations_file: "${match_gauges.outputs.matched_file}"
+      years: [1985, 1989]
+      frequency: daily
+    outputs:
+      timeseries_file: sim_timeseries.csv
+      n_locations: sim_n_locations.txt
+
+  - id: compute_fdc_metrics
+    tool: compute_fdc_metrics
+    params:
+      sim_file: "${extract_sim_timeseries.outputs.timeseries_file}"
+      obs_file: "${extract_obs_timeseries.outputs.timeseries_file}"
+    outputs:
+      metrics_file: fdc_metrics.csv
+      fdc_file: fdc_percentiles.csv
+
+  - id: plot_fdc
+    tool: plot_fdc
+    params:
+      metrics_file: "${compute_fdc_metrics.outputs.metrics_file}"
+      fdc_file: "${compute_fdc_metrics.outputs.fdc_file}"
+      locations_file: "${load_obs_metadata.outputs.metadata_file}"
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+    outputs:
+      plot_file: fdc_comparison.png

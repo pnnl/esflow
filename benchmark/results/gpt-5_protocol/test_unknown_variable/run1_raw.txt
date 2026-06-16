@@ -1,0 +1,40 @@
+name: "ELM Irrigation Withdrawal 1985-1989"
+description: |
+  Extract QIRRIG from ELM output for 1985-1989, compute the global mean, and plot a global map of mean irrigation withdrawal. Outputs a CSV with global mean and a PNG map.
+
+settings:
+  case_name: "sample_elm_case"
+  data_dir: "./data/sample/model"
+  output_dir: "./output/test_irrigation"
+  style: cream_ink
+
+steps:
+  - id: extract_qirrig_mean
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: "elm"
+      variable: "QIRRIG"
+      years: [1985, 1986, 1987, 1988, 1989]
+    outputs:
+      field_file: "qirrig_mean_1985_1989.nc"
+
+  - id: compute_global_mean
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_qirrig_mean.outputs.field_file}"
+      lat_bands: ""
+    outputs:
+      stats_file: "qirrig_global_mean.csv"
+
+  - id: plot_qirrig_map
+    tool: plot_gridded_map
+    params:
+      field_file: "${extract_qirrig_mean.outputs.field_file}"
+      variable: ""
+      title: "Mean Irrigation Withdrawal 1985-1989"
+      units: ""
+      stats_file: "${compute_global_mean.outputs.stats_file}"
+    outputs:
+      plot_file: "qirrig_mean_1985_1989_map.png"

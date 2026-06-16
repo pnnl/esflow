@@ -1,0 +1,80 @@
+name: Streamflow FDC Comparison 1985-1989
+description: 'Match gauges to E3SM MOSART grid, extract daily simulated and observed
+  discharge for 1985-1989,
+
+  compute flow duration curve (FDC) distributional metrics (volume bias, Wasserstein
+  distance,
+
+  Q10/Q50/Q90 ratios), save CSVs, and plot Wasserstein distance map with FDC panels
+  for selected gauges.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_protocol/task_04_streamflow_fdc/run1_output
+  style: cream_ink
+steps:
+- id: load_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ./data/sample/obs/gauge_metadata.csv
+  outputs:
+    metadata_file: ${settings.output_dir}/gauge_metadata_validated.csv
+- id: match_to_model_grid
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+  outputs:
+    matched_file: ${settings.output_dir}/matched_gauges.csv
+- id: extract_simulated_discharge_daily
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+    variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+    locations_file: ${match_to_model_grid.outputs.matched_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    frequency: daily
+  outputs:
+    timeseries_file: ${settings.output_dir}/sim_discharge_daily_1985-1989.csv
+- id: extract_observed_discharge_daily
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ./data/sample/obs/streamflow/
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    timeseries_file: ${settings.output_dir}/obs_discharge_daily_1985-1989.csv
+- id: compute_fdc_metrics_all_gauges
+  tool: compute_fdc_metrics
+  params:
+    sim_file: ${extract_simulated_discharge_daily.outputs.timeseries_file}
+    obs_file: ${extract_observed_discharge_daily.outputs.timeseries_file}
+  outputs:
+    metrics_file: ${settings.output_dir}/fdc_metrics_1985-1989.csv
+    fdc_file: ${settings.output_dir}/fdc_percentiles_1985-1989.csv
+- id: plot_wasserstein_map_with_fdc_panels
+  tool: plot_fdc
+  params:
+    metrics_file: ${compute_fdc_metrics_all_gauges.outputs.metrics_file}
+    fdc_file: ${compute_fdc_metrics_all_gauges.outputs.fdc_file}
+    locations_file: ${load_metadata.outputs.metadata_file}
+    metric: wasserstein
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    plot_file: ${settings.output_dir}/fdc_wasserstein_map_and_panels.png

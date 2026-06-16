@@ -1,0 +1,124 @@
+import os
+import requests
+import xarray as xr
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from scipy.stats import pearsonr
+
+def main():
+    # Directories and URLs
+    elm_dir = "./data/sample/e3sm/lnd"
+    case = "sample.v3.LR.historical"
+    output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_03_et_benchmark/run2_output"
+    os.makedirs(output_dir, exist_ok=True)
+    modis_url = "https://www.ilamb.org/ILAMB-Data/DATA/evspsbl/MODIS/et_0.5x0.5.nc"
+    modis_file = os.path.join(output_dir, "et_0.5x0.5.nc")
+
+    # Download MODIS ET if not exists
+    if not os.path.exists(modis_file):
+        try:
+            print("Downloading MODIS ET data...")
+            r = requests.get(modis_url, stream=True)
+            r.raise_for_status()
+            with open(modis_file, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            print("Downloaded MODIS ET to", modis_file)
+        except Exception as e:
+            print("Error downloading MODIS ET:", e)
+
+    # Load MODIS ET and compute climatology
+    print("Loading MODIS ET...")
+    ds_modis = xr.open_dataset(modis_file)
+    if 'et' in ds_modis:
+        modis_et = ds_modis['et']
+    else:
+        modis_et = ds_modis[list(ds_modis.data_vars)[0]]
+    print("Computing MODIS 1985-1989 climatology...")
+    modis_et_clim = modis_et.sel(time=slice("1985-01-01", "1989-12-31")).mean(dim="time")
+
+    # Load E3SM ELM ET components and compute climatology
+    print("Loading E3SM ELM ET components...")
+    pattern = os.path.join(elm_dir, f"{case}.elm.h0.198[5-9]-*.nc")
+    ds_elm = xr.open_mfdataset(pattern, combine='by_coords', parallel=True)
+    print("Summing QVEGE, QVEGT, QSOIL and converting to mm/day...")
+    et_elm = (ds_elm['QVEGE'] + ds_elm['QVEGT'] + ds_elm['QSOIL']) * 86400.0
+    print("Computing ELM ET 1985-1989 climatology...")
+    et_elm_clim = et_elm.sel(time=slice("1985-01", "1989-12")).mean(dim="time")
+
+    # Interpolate ELM climatology to MODIS grid
+    print("Regridding ELM ET to MODIS grid...")
+    try:
+        et_elm_on_modis = et_elm_clim.interp(lat=modis_et_clim.lat, lon=modis_et_clim.lon, method="nearest")
+    except Exception as e:
+        print("Error interpolating ELM to MODIS grid:", e)
+        return
+
+    # Compute bias field (model minus obs)
+    print("Computing bias field...")
+    bias = et_elm_on_modis - modis_et_clim
+
+    # Compute global mean bias (area-weighted)
+    print("Computing global mean bias...")
+    lat_rad = np.deg2rad(bias.lat)
+    weights = xr.DataArray(np.cos(lat_rad), dims=["lat"], coords={"lat": bias.lat})
+    num = (bias * weights).sum(dim=("lat", "lon"))
+    den = weights.sum(dim="lat") * bias.sizes["lon"]
+    try:
+        global_bias = (num / den).values.item()
+    except Exception:
+        # fallback compute
+        global_bias = float((num / den).compute().values.item())
+
+    # Compute spatial correlation between model and obs
+    print("Computing spatial correlation...")
+    m = et_elm_on_modis.values.flatten()
+    o = modis_et_clim.values.flatten()
+    mask = np.isfinite(m) & np.isfinite(o)
+    if mask.sum() > 0:
+        corr, _ = pearsonr(m[mask], o[mask])
+    else:
+        corr = np.nan
+
+    # Save bias field NetCDF
+    try:
+        print("Saving bias field to NetCDF...")
+        bias_ds = bias.to_dataset(name="et_bias")
+        bias_ds.to_netcdf(os.path.join(output_dir, "et_bias.nc"))
+    except Exception as e:
+        print("Error saving bias NetCDF:", e)
+
+    # Save metrics to CSV
+    try:
+        print("Saving metrics to CSV...")
+        df = pd.DataFrame({
+            "metric": ["global_mean_bias_mm_per_day", "spatial_correlation"],
+            "value": [global_bias, corr]
+        })
+        df.to_csv(os.path.join(output_dir, "metrics.csv"), index=False)
+    except Exception as e:
+        print("Error saving metrics CSV:", e)
+
+    # Plot bias map
+    try:
+        print("Plotting bias map...")
+        fig = plt.figure(figsize=(10,5))
+        ax = fig.add_subplot(1,1,1, projection=ccrs.PlateCarree())
+        bias.plot.pcolormesh(
+            ax=ax, transform=ccrs.PlateCarree(), cmap="RdBu_r",
+            cbar_kwargs={"label": "ET Bias (mm/day)"}
+        )
+        ax.coastlines()
+        ax.set_title("ET Bias (E3SM - MODIS) 1985-1989 Climatology")
+        plt.savefig(os.path.join(output_dir, "et_bias_map.png"), dpi=300)
+        plt.close(fig)
+    except Exception as e:
+        print("Error plotting bias map:", e)
+
+    print("All done. Results saved to", output_dir)
+
+if __name__ == "__main__":
+    main()

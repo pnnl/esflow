@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+import os
+import glob
+import json
+import urllib.request
+from datetime import datetime
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.path import Path as MplPath
+from scipy.stats import wasserstein_distance
+
+# ----------------------------
+# Configuration
+# ----------------------------
+CASE_NAME = "sample.v3.LR.historical"
+DATA_BASE = "./data/sample"
+E3SM_LND_DIR = os.path.join(DATA_BASE, "e3sm", "lnd")
+E3SM_ROF_DIR = os.path.join(DATA_BASE, "e3sm", "rof")
+OBS_STREAMFLOW_DIR = os.path.join(DATA_BASE, "obs", "streamflow")
+GAUGE_METADATA_CSV = os.path.join(DATA_BASE, "obs", "gauge_metadata.csv")
+BASIN_GEOJSON = os.path.join(DATA_BASE, "obs", "basin_polygons.geojson")
+ILAMB_BASE_URL = "https://www.ilamb.org/ILAMB-Data/DATA"
+ILAMB_CACHE_DIR = "ilamb_cache"
+
+# Period
+START_DATE = "1985-01-01"
+END_DATE = "1989-12-31"
+
+# Basins: Name -> Gauge ID
+BASINS = [
+    ("Amazon", "3629000"),
+    ("Missouri", "4121801"),
+    ("Columbia", "4115200"),
+    ("Danube", "6742900"),
+    ("Mekong", "2969100"),
+    ("Orange", "1159100"),
+]
+
+# Output directory (from user)
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_baseline/task_07_integrated_diagnostic/run4_debug/v1/output"
+
+# ----------------------------
+# Utilities
+# ----------------------------
+def ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        print(f"Warning: Failed to create directory {path}: {e}")
+
+def normalize_lon(lon, to_range="-180_180"):
+    if to_range == "-180_180":
+        lon = ((lon + 180) % 360) - 180
+    elif to_range == "0_360":
+        lon = lon % 360
+    return lon
+
+def detect_lat_lon_names(ds):
+    lat_candidates = ["lat", "latitude", "LAT", "nav_lat", "yc", "y"]
+    lon_candidates = ["lon", "longitude", "LON", "nav_lon", "xc", "x"]
+    lat_name = None
+    lon_name = None
+    for nm in list(ds.variables) + list(ds.coords):
+        if nm in lat_candidates:
+            lat_name = nm
+        if nm in lon_candidates:
+            lon_name = nm
+    if lat_name is None or lon_name is None:
+        for nm in ds.variables:
+            v = ds[nm]
+            if hasattr(v, "standard_name"):
+                if v.standard_name in ["latitude"] and lat_name is None:
+                    lat_name = nm
+                if v.standard_name in ["longitude"] and lon_name is None:
+                    lon_name = nm
+    return lat_name, lon_name
+
+def get_latlon_grids(ds):
+    lat_name, lon_name = detect_lat_lon_names(ds)
+    if lat_name is None or lon_name is None:
+        raise ValueError("Could not detect latitude/longitude variable names in dataset")
+    lat = ds[lat_name]
+    lon = ds[lon_name]
+    lon_vals = lon.values
+    lon_vals = normalize_lon(lon_vals, "-180_180")
+    try:
+        ds = ds.assign_coords({lon_name: (lon.dims, lon_vals)})
+    except Exception:
+        pass
+    if lat.ndim == 1 and lon.ndim == 1:
+        lon2d, lat2d = np.meshgrid(ds[lon_name].values, ds[lat_name].values)
+        return lat2d, lon2d, lat_name, lon_name, ds
+    elif lat.ndim == 2 and lon.ndim == 2:
+        return lat.values, lon_vals, lat_name, lon_name, ds
+    elif lat.ndim == 1 and lon.ndim == 2:
+        lat2d = np.tile(lat.values[:, None], (1, lon.shape[-1]))
+        return lat2d, lon_vals, lat_name, lon_name, ds
+    elif lat.ndim == 2 and lon.ndim == 1:
+        lon2d = np.tile(ds[lon_name].values[None, :], (lat.shape[0], 1))
+        return lat.values, lon2d, lat_name, lon_name, ds
+    else:
+        return lat.values, lon_vals, lat_name, lon_name, ds
+
+def days_in_time(da_time):
+    try:
+        return xr.DataArray(da_time.dt.days_in_month.astype(np.float64), coords={"time": da_time.values}, dims=("time",))
+    except Exception:
+        vals = np.full(da_time.shape[0], 30.0)
+        return xr.DataArray(vals, coords={"time": da_time.values}, dims=("time",))
+
+def convert_rate_to_mmd(da, units_attr=None, time=None):
+    units = units_attr
+    try:
+        if units is None and hasattr(da, "attrs") and "units" in da.attrs:
+            units = da.attrs["units"]
+    except Exception:
+        pass
+    if units is None:
+        return da
+    units_l = str(units).lower()
+    da_out = da
+    if ("kg" in units_l and "s-1" in units_l) or ("m s-1" in units_l) or ("mm s-1" in units_l):
+        da_out = da * 86400.0
+        da_out.attrs["units"] = "mm/day"
+    elif "mm/day" in units_l or "mm d-1" in units_l or "mm d^-1" in units_l:
+        da_out = da
+        da_out.attrs["units"] = "mm/day"
+    elif "mm/month" in units_l or "mm mon-1" in units_l or (("mm" in units_l) and ("day" not in units_l) and ("s" not in units_l)):
+        if time is not None and "time" in da.dims:
+            try:
+                dim_days = da["time"].dt.days_in_month
+                da_out = da / dim_days
+            except Exception:
+                da_out = da / 30.0
+        else:
+            da_out = da
+        da_out.attrs["units"] = "mm/day"
+    else:
+        pass
+    return da_out
+
+def weighted_time_mean(da):
+    if "time" not in da.dims:
+        return da
+    da2 = convert_rate_to_mmd(da, units_attr=da.attrs.get("units", None), time=da["time"])
+    w = days_in_time(da2["time"])
+    num = (da2 * w).sum(dim="time", skipna=True)
+    den = w.sum(dim="time")
+    try:
+        out = num / den
+    except Exception:
+        out = da2.mean(dim="time", skipna=True)
+    return out
+
+def polygon_mask(lat2d, lon2d, polygons):
+    lons = lon2d.copy()
+    lats = lat2d.copy()
+    lons = normalize_lon(lons, "-180_180")
+    pts = np.column_stack((lons.ravel(), lats.ravel()))
+    mask_flat = np.zeros(pts.shape[0], dtype=bool)
+    for poly in polygons:
+        try:
+            path = MplPath(np.array(poly))
+            inside = path.contains_points(pts)
+            mask_flat = mask_flat | inside
+        except Exception:
+            continue
+    mask = mask_flat.reshape(lons.shape)
+    return mask
+
+def area_weighted_mean_field(field_da, lat2d):
+    lat_rad = np.deg2rad(lat2d)
+    weights = np.cos(lat_rad)
+    arr = field_da.values
+    w = weights
+    valid = np.isfinite(arr)
+    w_eff = np.where(valid, w, 0.0)
+    num = np.nansum(arr * w_eff)
+    den = np.nansum(w_eff)
+    if den == 0:
+        return np.nan
+    return num / den
+
+def area_weighted_basin_mean(field_da, lat2d, lon2d, polygons):
+    if polygons is None or len(polygons) == 0:
+        return np.nan
+    mask = polygon_mask(lat2d, lon2d, polygons)
+    arr = field_da.values
+    if arr.shape != mask.shape:
+        raise ValueError("Field array shape does not match mask shape for area averaging")
+    field_masked = np.where(mask, arr, np.nan)
+    return area_weighted_mean_field(xr.DataArray(field_masked), lat2d)
+
+def download_ilamb(variable, dataset, filename, cache_dir):
+    ensure_dir(cache_dir)
+    url = f"{ILAMB_BASE_URL}/{variable}/{dataset}/{filename}"
+    local_path = os.path.join(cache_dir, f"{variable}_{dataset}_{os.path.basename(filename)}")
+    if not os.path.exists(local_path):
+        try:
+            print(f"Downloading {url} -> {local_path}")
+            urllib.request.urlretrieve(url, local_path)
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+    else:
+        print(f"Using cached ILAMB file: {local_path}")
+    return local_path
+
+def open_e3sm_elm_files(case_name, start_date, end_date):
+    pattern = os.path.join(E3SM_LND_DIR, f"{case_name}.elm.h0.*.nc")
+    files = sorted(glob.glob(pattern))
+    if len(files) == 0:
+        raise FileNotFoundError(f"No ELM files found with pattern {pattern}")
+    selected_files = []
+    for f in files:
+        base = os.path.basename(f)
+        try:
+            yymm = base.split(".")[-2]
+            dt = datetime.strptime(yymm, "%Y-%m")
+            if datetime.strptime(start_date, "%Y-%m-%d") <= dt <= datetime.strptime(end_date, "%Y-%m-%d"):
+                selected_files.append(f)
+        except Exception:
+            continue
+    if len(selected_files) == 0:
+        selected_files = files
+    ds = xr.open_mfdataset(selected_files, combine="by_coords")
+    if "time" in ds.dims:
+        ds = ds.sel(time=slice(start_date, end_date))
+    return ds
+
+def compute_elm_climatology(ds):
+    def cv(da):
+        return convert_rate_to_mmd(da, units_attr=da.attrs.get("units", None), time=da["time"] if "time" in da.dims else None)
+    P = None
+    if ("RAIN" in ds) or ("SNOW" in ds):
+        rain = ds["RAIN"] if "RAIN" in ds else 0
+        snow = ds["SNOW"] if "SNOW" in ds else 0
+        P = cv(rain) + cv(snow)
+    ET = None
+    if ("QVEGE" in ds) or ("QVEGT" in ds) or ("QSOIL" in ds):
+        qvege = ds["QVEGE"] if "QVEGE" in ds else 0
+        qvegt = ds["QVEGT"] if "QVEGT" in ds else 0
+        qsoil = ds["QSOIL"] if "QSOIL" in ds else 0
+        ET = cv(qvege) + cv(qvegt) + cv(qsoil)
+    Q = None
+    if "QRUNOFF" in ds:
+        Q = cv(ds["QRUNOFF"])
+    clim = {}
+    if P is not None:
+        clim["P_mmd"] = weighted_time_mean(P)
+    if ET is not None:
+        clim["ET_mmd"] = weighted_time_mean(ET)
+    if Q is not None:
+        clim["Q_mmd"] = weighted_time_mean(Q)
+    return xr.Dataset(clim)
+
+def open_ilamb_dataset(variable, dataset, filename, varname=None):
+    cache_path = download_ilamb(variable, dataset, filename, os.path.join(OUTPUT_DIR, ILAMB_CACHE_DIR))
+    ds = xr.open_dataset(cache_path)
+    if varname is None:
+        varname = variable
+    if varname not in ds.variables:
+        if len(ds.data_vars) > 0:
+            varname = list(ds.data_vars)[0]
+        else:
+            raise KeyError(f"Variable {varname} not found in {cache_path}")
+    da = ds[varname]
+    lat_name, lon_name = detect_lat_lon_names(ds)
+    if lon_name:
+        try:
+            ds = ds.assign_coords({lon_name: (ds[lon_name].dims, normalize_lon(ds[lon_name].values, "-180_180"))})
+            da = ds[varname]
+        except Exception:
+            pass
+    return ds, da
+
+def subset_time_and_climatology(da, start_date, end_date):
+    da2 = da
+    if "time" in da2.dims:
+        try:
+            da2 = da2.sel(time=slice(start_date, end_date))
+        except Exception:
+            pass
+        da2 = convert_rate_to_mmd(da2, units_attr=da2.attrs.get("units", None), time=da2["time"])
+        da2 = weighted_time_mean(da2)
+    else:
+        da2 = convert_rate_to_mmd(da2, units_attr=da2.attrs.get("units", None), time=None)
+    return da2
+
+def find_nearest_grid_cell(lat2d, lon2d, lat0, lon0):
+    lon0n = normalize_lon(lon0, "-180_180")
+    if lat2d.ndim == 1 and lon2d.ndim == 1:
+        lonm, latm = np.meshgrid(lon2d, lat2d)
+    else:
+        latm, lonm = lat2d, lon2d
+    dlat = latm - lat0
+    dlon = (lonm - lon0n) * np.cos(np.deg2rad(lat0))
+    dist2 = dlat**2 + dlon**2
+    idx = np.unravel_index(np.nanargmin(dist2), dist2.shape)
+    return idx
+
+def to_pandas_datetime_index(idx):
+    if isinstance(idx, pd.DatetimeIndex):
+        return idx
+    # Try attribute .to_datetimeindex (xarray CFTimeIndex)
+    try:
+        if hasattr(idx, "to_datetimeindex"):
+            pd_idx = idx.to_datetimeindex()
+            if isinstance(pd_idx, pd.DatetimeIndex):
+                return pd_idx
+    except Exception:
+        pass
+    # Try direct conversion
+    try:
+        return pd.to_datetime(np.array(idx))
+    except Exception:
+        pass
+    # Fallback loop over elements
+    try:
+        new_idx = []
+        for t in idx:
+            try:
+                new_idx.append(pd.Timestamp(t.year, t.month, t.day, getattr(t, "hour", 0), getattr(t, "minute", 0), getattr(t, "second", 0)))
+            except Exception:
+                try:
+                    new_idx.append(pd.to_datetime(str(t)))
+                except Exception:
+                    continue
+        return pd.DatetimeIndex(new_idx)
+    except Exception:
+        return pd.DatetimeIndex([])
+
+def extract_mosart_discharge_timeseries(case_name, start_date, end_date, lat0, lon0):
+    pattern_daily = os.path.join(E3SM_ROF_DIR, f"{case_name}.mosart.h1.*.nc")
+    files_daily = sorted(glob.glob(pattern_daily))
+    if len(files_daily) > 0:
+        try:
+            ds = xr.open_mfdataset(files_daily, combine="by_coords", parallel=False)
+            ds = ds.sel(time=slice(start_date, end_date))
+            lat2d, lon2d, lat_name, lon_name, ds = get_latlon_grids(ds)
+            varname = "RIVER_DISCHARGE_OVER_LAND_LIQ"
+            if varname not in ds.variables:
+                raise KeyError(f"{varname} not found in MOSART daily files")
+            idx = find_nearest_grid_cell(lat2d, lon2d, lat0, lon0)
+            var = ds[varname]
+            if lat2d.ndim == 2:
+                da_point = var[:, idx[0], idx[1]]
+            else:
+                lat_flat = lat2d.ravel()
+                lon_flat = lon2d.ravel()
+                dlat = lat_flat - lat0
+                dlon = (lon_flat - normalize_lon(lon0)) * np.cos(np.deg2rad(lat0))
+                flat_idx = np.argmin(dlat**2 + dlon**2)
+                da_point = var[:, flat_idx]
+            ts = da_point.to_series()
+            ts.index = to_pandas_datetime_index(ts.index)
+            ts = ts.loc[start_date:end_date]
+            ts.name = "sim_discharge_m3s"
+            ts = ts.dropna()
+            return ts
+        except Exception as e:
+            print(f"Warning: failed to read daily MOSART files; {e}")
+    pattern_monthly = os.path.join(E3SM_ROF_DIR, f"{case_name}.mosart.h0.*.nc")
+    files_monthly = sorted(glob.glob(pattern_monthly))
+    if len(files_monthly) == 0:
+        print(f"Warning: No MOSART rof files found in {E3SM_ROF_DIR}")
+        return pd.Series(dtype=float)
+    try:
+        ds = xr.open_mfdataset(files_monthly, combine="by_coords", parallel=False)
+        ds = ds.sel(time=slice(start_date, end_date))
+        lat2d, lon2d, lat_name, lon_name, ds = get_latlon_grids(ds)
+        varname = "RIVER_DISCHARGE_OVER_LAND_LIQ"
+        if varname not in ds.variables:
+            print(f"Warning: {varname} not found in MOSART monthly files")
+            return pd.Series(dtype=float)
+        idx = find_nearest_grid_cell(lat2d, lon2d, lat0, lon0)
+        var = ds[varname]
+        if lat2d.ndim == 2:
+            da_point = var[:, idx[0], idx[1]]
+        else:
+            lat_flat = lat2d.ravel()
+            lon_flat = lon2d.ravel()
+            dlat = lat_flat - lat0
+            dlon = (lon_flat - normalize_lon(lon0)) * np.cos(np.deg2rad(lat0))
+            flat_idx = np.argmin(dlat**2 + dlon**2)
+            da_point = var[:, flat_idx]
+        ts = da_point.to_series()
+        ts.index = to_pandas_datetime_index(ts.index)
+        ts = ts.loc[start_date:end_date]
+        ts_daily = ts.resample("D").ffill()
+        ts_daily.name = "sim_discharge_m3s"
+        ts_daily = ts_daily.dropna()
+        return ts_daily
+    except Exception as e:
+        print(f"Warning: Error reading MOSART monthly files: {e}")
+        return pd.Series(dtype=float)
+
+def read_obs_discharge_timeseries(gauge_id, start_date, end_date):
+    csv_path = os.path.join(OBS_STREAMFLOW_DIR, f"{gauge_id}.csv")
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["date"])
+        df = df.set_index("date").sort_index()
+        series = df["discharge_m3s"].loc[start_date:end_date]
+        series.name = "obs_discharge_m3s"
+        return series
+    except Exception as e:
+        print(f"Warning: Failed to read observed streamflow for gauge {gauge_id} at {csv_path}: {e}")
+        return pd.Series(dtype=float)
+
+def compute_streamflow_metrics(sim_series, obs_series):
+    # Ensure both indices are pandas DatetimeIndex
+    try:
+        if not isinstance(sim_series.index, pd.DatetimeIndex):
+            sim_series.index = to_pandas_datetime_index(sim_series.index)
+    except Exception:
+        pass
+    try:
+        if not isinstance(obs_series.index, pd.DatetimeIndex):
+            obs_series.index = to_pandas_datetime_index(obs_series.index)
+    except Exception:
+        pass
+    # Align on intersection of dates
+    try:
+        df = pd.concat([sim_series.rename("sim"), obs_series.rename("obs")], axis=1, join="inner").dropna()
+    except Exception as e:
+        print(f"Warning: Failed to align sim/obs series: {e}")
+        return np.nan, np.nan, np.nan
+    if df.empty:
+        return np.nan, np.nan, np.nan
+    sim = df["sim"].values
+    obs = df["obs"].values
+    vol_bias = (np.sum(sim) - np.sum(obs)) / np.sum(obs) * 100.0 if np.sum(obs) != 0 else np.nan
+    try:
+        wd = wasserstein_distance(sim, obs)
+    except Exception:
+        wd = np.nan
+    med_obs = np.median(obs) if len(obs) > 0 else np.nan
+    wd_rel_pct = (wd / med_obs * 100.0) if (med_obs is not None and med_obs != 0 and not np.isnan(med_obs)) else np.nan
+    return vol_bias, wd, wd_rel_pct
+
+def create_bar_chart(df_summary, out_png):
+    try:
+        basins = df_summary["basin_name"].tolist()
+        x = np.arange(len(basins))
+        width = 0.12
+        P_mod = (df_summary["P_mod_mmd"] * 365.0).values
+        P_obs = (df_summary["P_obs_mmd"] * 365.0).values
+        ET_mod = (df_summary["ET_mod_mmd"] * 365.0).values
+        ET_obs = (df_summary["ET_obs_mmd"] * 365.0).values
+        Q_mod = (df_summary["Q_mod_mmd"] * 365.0).values
+        Q_obs = (df_summary["Q_obs_mmd"] * 365.0).values
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.bar(x - 2*width, P_obs, width=width, color="#77b7ff", label="P obs")
+        ax.bar(x - width, P_mod, width=width, color="#1f78b4", label="P model")
+        ax.bar(x, ET_obs, width=width, color="#a6d854", label="ET obs")
+        ax.bar(x + width, ET_mod, width=width, color="#33a02c", label="ET model")
+        ax.bar(x + 2*width, Q_obs, width=width, color="#fdb462", label="Q obs")
+        ax.bar(x + 3*width, Q_mod, width=width, color="#e31a1c", label="Q model")
+        ax.set_xticks(x + width/2)
+        ax.set_xticklabels(basins, rotation=0)
+        ax.set_ylabel("Flux (mm/yr)")
+        ax.set_title("Model vs Observation: P, ET, Q (1985-1989)")
+        ax.legend(ncol=3, fontsize=9)
+        ax.grid(axis="y", linestyle="--", alpha=0.5)
+        fig.tight_layout()
+        fig.savefig(out_png, dpi=150)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Warning: Failed to create bar chart: {e}")
+
+def create_radar_charts(df_summary, out_png):
+    try:
+        metrics = ["P_bias_pct", "ET_bias_pct", "Runoff_bias_pct", "Streamflow_vol_bias_pct", "WB_diff_pct", "WD_rel_pct"]
+        labels = ["P bias %", "ET bias %", "Runoff bias %", "Streamflow bias %", "WB diff %", "WD rel %"]
+        n_metrics = len(metrics)
+        n_basins = df_summary.shape[0]
+        ncols = 3
+        nrows = int(np.ceil(n_basins / ncols))
+        angles = np.linspace(0, 2 * np.pi, n_metrics, endpoint=False).tolist()
+        angles += angles[:1]
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, subplot_kw=dict(polar=True), figsize=(16, 9))
+        axes = axes.flatten()
+        for i, (_, row) in enumerate(df_summary.iterrows()):
+            values = [row[m] if np.isfinite(row[m]) else 0.0 for m in metrics]
+            capped = []
+            for v in values:
+                if np.isnan(v):
+                    v = 0.0
+                if v > 200:
+                    v = 200
+                if v < -200:
+                    v = -200
+                capped.append(v)
+            data = capped + capped[:1]
+            ax = axes[i]
+            ax.set_theta_offset(np.pi / 2)
+            ax.set_theta_direction(-1)
+            ax.plot(angles, data, color="#1f78b4", linewidth=2)
+            ax.fill(angles, data, color="#1f78b4", alpha=0.25)
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(labels, fontsize=8)
+            ax.set_yticks([-200, -100, 0, 100, 200])
+            ax.set_yticklabels(["-200", "-100", "0", "100", "200"], fontsize=7)
+            ax.set_title(f"{row['basin_name']}", y=1.1, fontsize=12)
+        for j in range(i + 1, len(axes)):
+            fig.delaxes(axes[j])
+        fig.suptitle("Multi-variable Diagnostic Radar (1985-1989)", fontsize=14)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.savefig(out_png, dpi=150)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Warning: Failed to create radar charts: {e}")
+
+# ----------------------------
+# Main process
+# ----------------------------
+def main():
+    ensure_dir(OUTPUT_DIR)
+
+    # Part 1: ELM climatological time-mean fields
+    try:
+        elm_ds = open_e3sm_elm_files(CASE_NAME, START_DATE, END_DATE)
+        elm_clim = compute_elm_climatology(elm_ds)
+        lat2d, lon2d, lat_name, lon_name, elm_ds = get_latlon_grids(elm_ds)
+        try:
+            model_nc_path = os.path.join(OUTPUT_DIR, "model_climatology_P_ET_Q_mmday.nc")
+            elm_clim.to_netcdf(model_nc_path)
+        except Exception as e:
+            print(f"Warning: Failed to save model climatology NetCDF: {e}")
+    except Exception as e:
+        print(f"Error in Part 1 (ELM extraction): {e}")
+        return
+
+    # Part 2: ILAMB observations
+    try:
+        gpcc_ds, gpcc_da = open_ilamb_dataset("pr", "GPCCv2018", "pr.nc", varname="pr")
+        gpcc_clim = subset_time_and_climatology(gpcc_da, START_DATE, END_DATE)
+        modis_ds, modis_da = open_ilamb_dataset("evspsbl", "MODIS", "et_0.5x0.5.nc", varname="et")
+        modis_clim = subset_time_and_climatology(modis_da, START_DATE, END_DATE)
+        lora_ds, lora_da = open_ilamb_dataset("mrro", "LORA", "LORA.nc", varname="mrro")
+        lora_clim = subset_time_and_climatology(lora_da, START_DATE, END_DATE)
+        try:
+            obs_clim_ds = xr.Dataset({
+                "pr_mmd": gpcc_clim,
+                "et_mmd": modis_clim,
+                "mrro_mmd": lora_clim
+            })
+            obs_nc_path = os.path.join(OUTPUT_DIR, "obs_climatology_pr_et_mrro_mmday.nc")
+            obs_clim_ds.to_netcdf(obs_nc_path)
+        except Exception as e:
+            print(f"Warning: Failed to save obs climatology NetCDF: {e}")
+    except Exception as e:
+        print(f"Error in Part 2 (ILAMB extraction): {e}")
+        return
+
+    # Prepare grids for basin clipping
+    try:
+        elm_lat2d, elm_lon2d, elm_lat_name, elm_lon_name, _ = get_latlon_grids(elm_ds)
+    except Exception as e:
+        print(f"Error: Failed to get ELM grid lat/lon: {e}")
+        return
+    try:
+        gpcc_lat2d, gpcc_lon2d, gpcc_lat_name, gpcc_lon_name, gpcc_ds = get_latlon_grids(gpcc_ds)
+    except Exception as e:
+        print(f"Error: Failed to get GPCC grid lat/lon: {e}")
+        return
+    try:
+        modis_lat2d, modis_lon2d, modis_lat_name, modis_lon_name, modis_ds = get_latlon_grids(modis_ds)
+    except Exception as e:
+        print(f"Error: Failed to get MODIS grid lat/lon: {e}")
+        return
+    try:
+        lora_lat2d, lora_lon2d, lora_lat_name, lora_lon_name, lora_ds = get_latlon_grids(lora_ds)
+    except Exception as e:
+        print(f"Error: Failed to get LORA grid lat/lon: {e}")
+        return
+
+    # Part 3: Basin means
+    try:
+        with open(BASIN_GEOJSON, "r") as f:
+            geo = json.load(f)
+        features = geo.get("features", [])
+    except Exception as e:
+        print(f"Error: Failed to read basin polygons {BASIN_GEOJSON}: {e}")
+        return
+
+    basin_polygons = {}
+    for feat in features:
+        props = feat.get("properties", {})
+        gid = str(props.get("grdc_no", "")).strip()
+        geom = feat.get("geometry", {})
+        gtype = geom.get("type", "")
+        coords = geom.get("coordinates", [])
+        polygons = []
+        if gtype == "Polygon":
+            if len(coords) > 0:
+                exterior = coords[0]
+                polygons.append(exterior)
+        elif gtype == "MultiPolygon":
+            for poly in coords:
+                if len(poly) > 0:
+                    exterior = poly[0]
+                    polygons.append(exterior)
+        else:
+            continue
+        basin_polygons[gid] = polygons
+
+    try:
+        gauge_df = pd.read_csv(GAUGE_METADATA_CSV)
+        gauge_df["gauge_id"] = gauge_df["gauge_id"].astype(str)
+        gauge_df = gauge_df.set_index("gauge_id")
+    except Exception as e:
+        print(f"Warning: Failed to read gauge metadata: {e}")
+        gauge_df = pd.DataFrame()
+
+    # Part 4 and Part 5: Loop basins
+    results = []
+
+    for basin_name, gid in BASINS:
+        print(f"Processing basin {basin_name} ({gid})")
+        polygons = basin_polygons.get(gid, None)
+        if polygons is None:
+            print(f"Warning: No polygon found for gauge {gid}")
+            polygons = []
+
+        try:
+            P_mod_field = elm_clim["P_mmd"]
+            ET_mod_field = elm_clim["ET_mmd"]
+            Q_mod_field = elm_clim["Q_mmd"]
+            P_mod_val = area_weighted_basin_mean(P_mod_field, elm_lat2d, elm_lon2d, polygons)
+            ET_mod_val = area_weighted_basin_mean(ET_mod_field, elm_lat2d, elm_lon2d, polygons)
+            Q_mod_val = area_weighted_basin_mean(Q_mod_field, elm_lat2d, elm_lon2d, polygons)
+        except Exception as e:
+            print(f"Warning: Failed computing model basin means for {basin_name}: {e}")
+            P_mod_val = np.nan
+            ET_mod_val = np.nan
+            Q_mod_val = np.nan
+
+        try:
+            P_obs_val = area_weighted_basin_mean(gpcc_clim, gpcc_lat2d, gpcc_lon2d, polygons)
+        except Exception as e:
+            print(f"Warning: Failed GPCC basin mean for {basin_name}: {e}")
+            P_obs_val = np.nan
+        try:
+            ET_obs_val = area_weighted_basin_mean(modis_clim, modis_lat2d, modis_lon2d, polygons)
+        except Exception as e:
+            print(f"Warning: Failed MODIS ET basin mean for {basin_name}: {e}")
+            ET_obs_val = np.nan
+        try:
+            Q_obs_val = area_weighted_basin_mean(lora_clim, lora_lat2d, lora_lon2d, polygons)
+        except Exception as e:
+            print(f"Warning: Failed LORA runoff basin mean for {basin_name}: {e}")
+            Q_obs_val = np.nan
+
+        def pct_bias(mod, obs):
+            if obs is None or np.isnan(obs) or obs == 0:
+                return np.nan
+            return (mod - obs) / obs * 100.0
+
+        P_bias_pct = pct_bias(P_mod_val, P_obs_val)
+        ET_bias_pct = pct_bias(ET_mod_val, ET_obs_val)
+        Runoff_bias_pct = pct_bias(Q_mod_val, Q_obs_val)
+
+        WB_model = P_mod_val - ET_mod_val - Q_mod_val
+        WB_obs = P_obs_val - ET_obs_val - Q_obs_val
+        if P_obs_val is None or np.isnan(P_obs_val) or P_obs_val == 0:
+            WB_diff_pct = np.nan
+        else:
+            WB_diff_pct = (WB_model - WB_obs) / P_obs_val * 100.0
+
+        lat0 = np.nan
+        lon0 = np.nan
+        area_km2 = np.nan
+        river_name = ""
+        try:
+            if gid in gauge_df.index:
+                row = gauge_df.loc[gid]
+                lat0 = float(row["lat"])
+                lon0 = float(row["lon"])
+                area_km2 = float(row.get("area_km2", np.nan))
+                river_name = str(row.get("river_name", ""))
+        except Exception as e:
+            print(f"Warning: Could not find metadata for gauge {gid}: {e}")
+
+        sim_ts = extract_mosart_discharge_timeseries(CASE_NAME, START_DATE, END_DATE, lat0, lon0)
+        obs_ts = read_obs_discharge_timeseries(gid, START_DATE, END_DATE)
+        Streamflow_vol_bias_pct, Wasserstein_dist, WD_rel_pct = compute_streamflow_metrics(sim_ts, obs_ts)
+
+        results.append({
+            "basin_name": basin_name,
+            "gauge_id": gid,
+            "river_name": river_name,
+            "area_km2": area_km2,
+            "P_mod_mmd": P_mod_val,
+            "P_obs_mmd": P_obs_val,
+            "ET_mod_mmd": ET_mod_val,
+            "ET_obs_mmd": ET_obs_val,
+            "Q_mod_mmd": Q_mod_val,
+            "Q_obs_mmd": Q_obs_val,
+            "P_bias_pct": P_bias_pct,
+            "ET_bias_pct": ET_bias_pct,
+            "Runoff_bias_pct": Runoff_bias_pct,
+            "WB_model_mmd": WB_model,
+            "WB_obs_mmd": WB_obs,
+            "WB_diff_pct": WB_diff_pct,
+            "Streamflow_vol_bias_pct": Streamflow_vol_bias_pct,
+            "Wasserstein_distance_m3s": Wasserstein_dist,
+            "WD_rel_pct": WD_rel_pct
+        })
+
+    df_summary = pd.DataFrame(results)
+    summary_csv = os.path.join(OUTPUT_DIR, "basin_integrated_diagnostic_summary.csv")
+    try:
+        df_summary.to_csv(summary_csv, index=False)
+    except Exception as e:
+        print(f"Warning: Failed to save summary CSV: {e}")
+
+    bar_png = os.path.join(OUTPUT_DIR, "model_vs_obs_P_ET_Q_bar.png")
+    create_bar_chart(df_summary, bar_png)
+
+    radar_png = os.path.join(OUTPUT_DIR, "radar_multivariable_diagnostic.png")
+    create_radar_charts(df_summary, radar_png)
+
+    print(f"Analysis complete. Outputs are in: {OUTPUT_DIR}")
+
+if __name__ == "__main__":
+    main()

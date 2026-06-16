@@ -1,0 +1,176 @@
+import xarray as xr
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import os
+import glob
+
+# --- Configuration ---
+E3SM_DATA_DIR = "./data/sample/e3sm/"
+CASE_NAME = "sample.v3.LR.historical"
+COMPONENT_DIR = "lnd" # Directory name for ELM output
+COMPONENT_FILE_IDENTIFIER = "elm" # Identifier in the filename for ELM output
+H_FILE_TYPE = "h0" # Monthly output
+VARIABLE_NAME = "QRUNOFF" # Runoff in mm/s (or kg/m2/s)
+START_YEAR = 1985
+END_YEAR = 1989
+
+# The full absolute path for output is provided in the prompt.
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gemini-2.5-flash_baseline/task_02_seasonal_runoff/run3_output"
+
+# --- Create output directory ---
+try:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Output directory created or already exists: {OUTPUT_DIR}")
+except Exception as e:
+    print(f"Error creating output directory {OUTPUT_DIR}: {e}")
+    # If directory creation fails, subsequent file operations will likely fail.
+    # For robustness, one might exit here, but the prompt asks to report and continue.
+
+# --- File path construction and filtering ---
+data_component_path = os.path.join(E3SM_DATA_DIR, COMPONENT_DIR)
+# FIX: The original script used COMPONENT in the filename pattern, which was 'lnd'.
+# However, the ELM filenames use 'elm' as the component identifier.
+file_pattern = os.path.join(data_component_path, f"{CASE_NAME}.{COMPONENT_FILE_IDENTIFIER}.{H_FILE_TYPE}.*.nc")
+all_files = sorted(glob.glob(file_pattern))
+
+# Filter files for the specified time period (YYYY-MM)
+filtered_files = []
+for f in all_files:
+    try:
+        # Extract YYYY-MM from filename: e.g., sample.v3.LR.historical.elm.h0.1985-01.nc
+        date_str = f.split('.')[-2] # '1985-01'
+        year = int(date_str.split('-')[0])
+        if START_YEAR <= year <= END_YEAR:
+            filtered_files.append(f)
+    except IndexError:
+        print(f"Warning: Could not parse date from filename {f}. Skipping.")
+    except ValueError:
+        print(f"Warning: Could not convert year to int from filename {f}. Skipping.")
+
+if not filtered_files:
+    print(f"Error: No files found for {CASE_NAME} {COMPONENT_FILE_IDENTIFIER} {H_FILE_TYPE} between {START_YEAR}-{END_YEAR} in {data_component_path}")
+    exit()
+
+print(f"Found {len(filtered_files)} files for analysis.")
+
+# --- Load data ---
+ds = None # Initialize ds to None
+try:
+    # Open multiple files as a single dataset.
+    # combine='by_coords' is generally robust for time series.
+    ds = xr.open_mfdataset(filtered_files, combine='by_coords', decode_times=True)
+    print("Dataset loaded successfully.")
+
+    # Further filter by time dimension to ensure exact range
+    ds = ds.sel(time=slice(f'{START_YEAR}-01-01', f'{END_YEAR}-12-31'))
+    print(f"Dataset time range after selection: {ds.time.min().dt.strftime('%Y-%m').item()} to {ds.time.max().dt.strftime('%Y-%m').item()}")
+
+except Exception as e:
+    print(f"Error loading E3SM data from {file_pattern}: {e}")
+    exit()
+
+# --- Compute climatological mean runoff ---
+if VARIABLE_NAME not in ds.variables:
+    print(f"Error: Variable '{VARIABLE_NAME}' not found in the dataset.")
+    print(f"Available variables: {list(ds.variables)}")
+    exit()
+
+climatological_mean_runoff = None # Initialize
+try:
+    climatological_mean_runoff = ds[VARIABLE_NAME].mean(dim='time')
+    print(f"Climatological mean of {VARIABLE_NAME} computed.")
+except Exception as e:
+    print(f"Error computing climatological mean for {VARIABLE_NAME}: {e}")
+    exit()
+
+# --- Compute area-weighted global mean ---
+if 'area' not in ds.variables:
+    print("Error: 'area' variable not found in the dataset for area-weighting.")
+    print(f"Available variables: {list(ds.variables)}")
+    exit()
+
+global_mean_runoff_mm_day = None # Initialize
+try:
+    # Convert QRUNOFF from mm/s to mm/day for global mean reporting (more intuitive)
+    # 1 day = 24 hours * 60 minutes/hour * 60 seconds/minute = 86400 seconds
+    runoff_mm_day = climatological_mean_runoff * 86400
+    runoff_mm_day.attrs['units'] = 'mm/day'
+    runoff_mm_day.attrs['long_name'] = f"Climatological mean {VARIABLE_NAME} ({START_YEAR}-{END_YEAR}) in mm/day"
+
+    # Area-weighted mean calculation
+    # 'area' variable is typically in m^2 and has 'lndgrid' dimension.
+    # climatological_mean_runoff also has 'lndgrid' dimension.
+    # FIX: Add .compute() to trigger Dask computation before calling .item()
+    global_mean_runoff_mm_day = ((runoff_mm_day * ds['area']).sum() / ds['area'].sum()).compute()
+    print(f"Area-weighted global mean {VARIABLE_NAME} ({START_YEAR}-{END_YEAR}): {global_mean_runoff_mm_day.item():.3f} mm/day")
+
+except Exception as e:
+    print(f"Error computing area-weighted global mean: {e}")
+    exit()
+
+# --- Save climatological mean runoff to NetCDF ---
+if climatological_mean_runoff is not None:
+    output_netcdf_path = os.path.join(OUTPUT_DIR, f"{VARIABLE_NAME}_climatological_mean_{START_YEAR}-{END_YEAR}.nc")
+    try:
+        # Ensure the variable has a name for saving.
+        climatological_mean_runoff.name = VARIABLE_NAME
+        climatological_mean_runoff.attrs['long_name'] = f"Climatological mean {VARIABLE_NAME} ({START_YEAR}-{END_YEAR})"
+        # Keep original units (mm/s) for the saved field
+        climatological_mean_runoff.attrs['units'] = ds[VARIABLE_NAME].attrs.get('units', 'mm/s')
+        climatological_mean_runoff.to_netcdf(output_netcdf_path)
+        print(f"Climatological mean runoff field saved to {output_netcdf_path}")
+    except Exception as e:
+        print(f"Error saving NetCDF file {output_netcdf_path}: {e}")
+
+# --- Save global mean to text file ---
+if global_mean_runoff_mm_day is not None:
+    output_global_mean_path = os.path.join(OUTPUT_DIR, f"global_mean_{VARIABLE_NAME}_{START_YEAR}-{END_YEAR}.txt")
+    try:
+        with open(output_global_mean_path, 'w') as f:
+            f.write(f"Area-weighted global mean {VARIABLE_NAME} ({START_YEAR}-{END_YEAR}):\n")
+            f.write(f"{global_mean_runoff_mm_day.item():.3f} {runoff_mm_day.attrs['units']}\n")
+        print(f"Global mean runoff value saved to {output_global_mean_path}")
+    except Exception as e:
+        print(f"Error saving global mean text file {output_global_mean_path}: {e}")
+
+# --- Produce a map ---
+if climatological_mean_runoff is not None and global_mean_runoff_mm_day is not None:
+    output_plot_path = os.path.join(OUTPUT_DIR, f"{VARIABLE_NAME}_climatological_mean_map_{START_YEAR}-{END_YEAR}.png")
+    try:
+        # Prepare data for plotting: assign lat/lon as coordinates to the DataArray
+        plot_data = climatological_mean_runoff.copy()
+        plot_data = plot_data.assign_coords(lat=ds['lat'], lon=ds['lon'])
+        plot_data.attrs['long_name'] = f"Climatological Mean {VARIABLE_NAME}"
+        plot_data.attrs['units'] = ds[VARIABLE_NAME].attrs.get('units', 'mm/s') # Use original units for map colorbar
+
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+
+        # Use xarray's built-in plotting for convenience.
+        # It handles the mapping from 1D lndgrid with lat/lon coordinates to a 2D plot.
+        plot_data.plot.pcolormesh(
+            ax=ax,
+            x='lon',
+            y='lat',
+            transform=ccrs.PlateCarree(),
+            cmap='viridis', # 'viridis' or 'Blues_r' are good choices for runoff
+            cbar_kwargs={'label': f"{VARIABLE_NAME} ({plot_data.attrs['units']})"},
+            extend='both' # Extend colorbar to show values outside the range
+        )
+
+        ax.coastlines()
+        ax.set_title(f"Climatological Mean {VARIABLE_NAME} ({START_YEAR}-{END_YEAR})\n"
+                     f"Global Mean: {global_mean_runoff_mm_day.item():.3f} {runoff_mm_day.attrs['units']}")
+        ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
+
+        plt.tight_layout()
+        plt.savefig(output_plot_path, dpi=300)
+        plt.close(fig)
+        print(f"Map saved to {output_plot_path}")
+
+    except Exception as e:
+        print(f"Error creating map {output_plot_path}: {e}")
+
+print("Script finished.")

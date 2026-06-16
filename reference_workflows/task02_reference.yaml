@@ -1,0 +1,40 @@
+name: "T2 Reference: Seasonal Runoff"
+description: |
+  Reference workflow for Task 02. Extracts global QRUNOFF from ELM
+  for 1985-1989, computes the climatological area-weighted global
+  mean, and produces a map with statistics overlay.
+
+settings:
+  output_dir: ./output/task02_seasonal_runoff
+  data_dir: ./data/sample/e3sm
+  case_name: sample.v3.LR.historical
+  years: [1985, 1986, 1987, 1988, 1989]
+
+steps:
+  - id: extract_runoff
+    tool: extract_gridded_field
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: elm
+      variable: QRUNOFF
+      years: "${settings.years}"
+    outputs: 
+      field_file: qrunoff_mean.nc
+
+  - id: global_stats
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_runoff.outputs.field_file}"
+    outputs:
+      stats_file: global_runoff_stats.csv
+
+  - id: plot_map
+    tool: plot_gridded_map
+    params:
+      field_file: "${extract_runoff.outputs.field_file}"
+      title: "E3SM Climatological Mean Runoff (1985-1989)"
+      units: "mm/s"
+      stats_file: "${global_stats.outputs.stats_file}"
+    outputs:
+      plot_file: qrunoff_map.png
