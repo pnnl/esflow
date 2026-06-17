@@ -11,7 +11,7 @@ This repository accompanies the manuscript:
 > Pacific Northwest National Laboratory
 > Submitted to *Geoscientific Model Development* (GMD), 2026
 
-The paper introduces ESFlow and benchmarks it against unconstrained LLM code generation across six contemporary LLMs and seven E3SM land-surface-hydrology analysis tasks, with a focus on silent failures — plausible, well-formatted output that numerically disagrees with hand-crafted references. A frozen snapshot of this repository — together with the sample data (E3SM output, GRDC streamflow) and full per-model benchmark outputs — is archived on Zenodo (DOI: 10.5281/zenodo.19350842).
+The paper introduces ESFlow and benchmarks it against unconstrained LLM code generation across six contemporary LLMs and seven E3SM land-surface-hydrology analysis tasks, with a focus on silent failures — plausible, well-formatted output that numerically disagrees with hand-crafted references. The Zenodo v2 data release, including the sample data used by the reference workflows, is available at <https://zenodo.org/records/20584449>.
 
 Correspondence: Tian Zhou (<tian.zhou@pnnl.gov>).
 
@@ -40,38 +40,39 @@ User describes task    →  Any LLM reads catalog    →  workflow.yaml
                           run_workflow.py           →  figures, metrics, CSVs
 ```
 
-1. **Tools** are Python functions decorated with `@esmflow_tool(ToolSpec(...))`. The decorator registers typed inputs and outputs, validates parameters, and rejects unknown params.
+1. **Tools** are Python functions decorated with `@esmflow_tool(ToolSpec(...))`. The decorator registers typed inputs and outputs, validates parameters, and rejects unknown parameters.
 2. **`generate_catalog.py`** auto-discovers all tools and writes `tool_catalog.yaml` — the sole interface between LLMs and tools.
 3. **Any LLM** (ChatGPT, Claude, Gemini, Llama, etc.) reads the catalog and generates a YAML workflow from a natural-language request.
 4. **`run_workflow.py`** executes the YAML step-by-step, passing outputs between tools via `${step_id.outputs.key}` references.
 
-## Design Principles (v3)
+## Design Principles
 
 **LLMs connect building blocks. Tools handle internals. Minimize decisions the LLM must make.**
 
-- **15 tools, 45 total params** (v2 had 16 tools with ~90 params)
+- **24 tools, 92 total input parameters**
 - **Strict validation**: unknown parameters are rejected immediately
 - **No modal behavior**: each tool does exactly one thing, no mode/format switches
-- **Match by column name**: no `match_by`, `x_column`, `y_column` params — tools match gauge_id columns automatically
-- **Standardized CSV schemas**: 5 schemas, all lowercase column names
+- **Match by column name**: no `match_by`, `x_column`, `y_column` parameters — tools match gauge_id columns automatically
+- **Standardized file schemas**: common CSV/NetCDF contracts are documented in the catalog and schema reference
 - **Simple observation format**: one CSV per gauge (`date`, `discharge_m3s`)
 
 ## Quick Start
 
 ```bash
 # Clone and install
-git clone https://github.com/pnnl-int/esflow.git
+git clone https://github.com/pnnl/esflow.git
 cd esflow
 pip install -r requirements.txt
 
 # Validate a workflow (no data needed)
-python run_workflow.py workflows/examples/obs_only_validation.yaml --dry-run
+python run_workflow.py reference_workflows/task01_reference.yaml --dry-run
 
-# Run the self-test workflow (uses included sample data)
-python run_workflow.py workflows/examples/obs_only_validation.yaml
+# Download the Zenodo v2 sample data and unpack it into data/ before execution
+# https://zenodo.org/records/20584449
+python run_workflow.py reference_workflows/task01_reference.yaml
 
 # Reuse existing intermediate files
-python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
+python run_workflow.py reference_workflows/task01_reference.yaml --reuse
 ```
 
 ## Generating Workflows with an LLM
@@ -83,29 +84,38 @@ python run_workflow.py workflows/examples/obs_only_validation.yaml --reuse
 
 See **[docs/guide.md](docs/guide.md)** for the full protocol, task description examples, and instructions for adding your own tools.
 
-## Tools (15)
+## Tools (24)
 
-| # | Category | Tool | Params | Description |
+| # | Category | Tool | Parameters | Description |
 |---|----------|------|--------|-------------|
-| 1 | fetchers | `fetch_ilamb_data` | 2 | Download obs NetCDF from ILAMB server (18 variable/dataset pairs) |
+| 1 | fetchers | `fetch_ilamb_data` | 2 | Download observation NetCDF files from the ILAMB server |
 | 2 | loaders | `load_obs_metadata` | 1 | Load and validate gauge metadata CSV |
 | 3 | matchers | `match_to_grid` | 4 | Match gauges to E3SM model grid |
-| 4 | extractors | `extract_e3sm_timeseries` | 7 | Extract model time series at gauge locations (monthly/daily) |
-| 5 | extractors | `extract_obs_timeseries` | 3 | Extract obs from per-gauge CSVs |
-| 6 | extractors | `extract_gridded_field` | 6 | Extract 2D field from E3SM or obs NetCDF; supports composite variables |
-| 7 | analyzers | `compute_climatology` | 1 | Monthly means (1-12) |
-| 8 | analyzers | `compute_spatial_bias` | 2 | Spatial bias (A minus B) with regridding |
-| 9 | analyzers | `compute_zonal_stats` | 3 | Area-weighted global/latitude-band means |
-| 10 | analyzers | `compute_summary_stats` | 4 | Mean/std/min/max per column with optional ranking |
-| 11 | analyzers | `compute_metrics` | 2 | NSE, KGE, PBIAS, RMSE, correlation |
-| 12 | plotters | `plot_scatter` | 2 | Mean discharge scatter plot |
-| 13 | plotters | `plot_gridded_map` | 3 | 2D field on geographic map |
-| 14 | plotters | `plot_timeseries` | 2 | Sim vs obs time series panels |
-| 15 | plotters | `plot_map` | 3 | Metric values at gauge locations on a map |
+| 4 | extractors | `extract_basin_mean` | 3 | Extract area-weighted basin means from gridded fields |
+| 5 | extractors | `extract_e3sm_timeseries` | 7 | Extract model time series at gauge locations |
+| 6 | extractors | `extract_obs_timeseries` | 4 | Extract observations from per-gauge CSVs |
+| 7 | extractors | `extract_gridded_field` | 6 | Extract 2D fields from E3SM or observation NetCDF files |
+| 8 | analyzers | `compute_climatology` | 1 | Compute monthly climatology from time series |
+| 9 | analyzers | `compute_spatial_bias` | 2 | Compute gridded spatial bias and summary statistics |
+| 10 | analyzers | `compute_zonal_stats` | 3 | Compute area-weighted global or latitude-band means |
+| 11 | analyzers | `compute_summary_stats` | 4 | Compute mean/std/min/max per time-series column |
+| 12 | analyzers | `compute_basin_budget` | 8 | Build per-basin water budget summary tables |
+| 13 | analyzers | `compute_metrics` | 2 | Compute NSE, KGE, PBIAS, RMSE, and correlation |
+| 14 | analyzers | `compute_fdc_metrics` | 2 | Compute flow duration curve distributional metrics |
+| 15 | plotters | `plot_water_balance_basins` | 8 | Plot global residual maps with basin water-balance bars |
+| 16 | plotters | `plot_scatter` | 2 | Plot mean-value scatter comparisons |
+| 17 | plotters | `plot_gridded_map` | 5 | Plot 2D gridded fields on geographic maps |
+| 18 | plotters | `plot_basin_radar` | 1 | Plot basin water-cycle diagnostic radar charts |
+| 19 | plotters | `plot_timeseries` | 2 | Plot simulated vs observed time series panels |
+| 20 | plotters | `plot_map` | 3 | Plot validation metrics at gauge locations |
+| 21 | plotters | `plot_fdc` | 6 | Plot flow duration curve comparisons |
+| 22 | plotters | `plot_basin_timeseries` | 6 | Plot basin maps with discharge time series |
+| 23 | plotters | `plot_bias_comparison` | 9 | Plot observation, simulation, and bias map comparisons |
+| 24 | plotters | `plot_basin_budget_comparison` | 1 | Plot basin water-budget component comparisons |
 
 ## Standard Data Schemas
 
-Tools communicate through typed CSV files. The catalog declares exact column schemas so an LLM can wire tools together without guessing.
+Tools communicate through typed files. The table below lists common CSV contracts; tool-specific NetCDF, CSV, and figure outputs are documented in `tools/tool_catalog.yaml`.
 
 | Schema | Index | Columns | Producers | Consumers |
 |--------|-------|---------|-----------|-----------|
@@ -120,24 +130,27 @@ Tools communicate through typed CSV files. The catalog declares exact column sch
 
 ## Sample Data
 
-ESFlow includes 94 representative GRDC gauges for testing:
+Sample data is distributed separately to keep this repository lightweight. Download the Zenodo v2 data release from <https://zenodo.org/records/20584449> and unpack it into `data/`.
 
 ```
-data/sample/obs/
-├── gauge_metadata.csv              # 94 gauges: gauge_id, lat, lon, area_km2, river_name
-└── streamflow/
-    ├── 1147013.csv                 # date, discharge_m3s (Congo at Kinshasa)
-    ├── 2181900.csv                 # date, discharge_m3s (Yangtze at Datong)
-    └── ...                         # 94 files total
+data/sample/
+├── e3sm/                           # Sample E3SM output used by reference workflows
+└── obs/
+    ├── gauge_metadata.csv          # gauge_id, lat, lon, area_km2, river_name
+    └── streamflow/                 # per-gauge CSVs: date, discharge_m3s
 ```
 
 ## Example Workflows
 
 | Workflow | Steps | What it does |
 |----------|-------|-------------|
-| `obs_only_validation.yaml` | 7 | Self-test: obs vs obs (all metrics should be perfect) |
-| `single_gauge_comparison.yaml` | 6 | Compare E3SM MOSART discharge vs observations |
-| `multi_gauge_validation.yaml` | 9 | Full validation with metrics, climatology, scatter, and map |
+| `reference_workflows/task01_reference.yaml` | 3 | Observation streamflow summary statistics |
+| `reference_workflows/task02_reference.yaml` | 3 | Seasonal runoff field extraction, statistics, and map |
+| `reference_workflows/task03_reference.yaml` | 5 | Evapotranspiration benchmark against ILAMB observations |
+| `reference_workflows/task04_reference.yaml` | 6 | Streamflow distribution and FDC comparison |
+| `reference_workflows/task05_reference.yaml` | 6 | Basin-scale streamflow analysis |
+| `reference_workflows/task06_reference.yaml` | 13 | Water-balance diagnostic workflow |
+| `reference_workflows/task07_reference.yaml` | 23 | Integrated basin water-cycle evaluation |
 
 ## Benchmarking LLMs
 
@@ -148,10 +161,10 @@ ESFlow includes a benchmark system that evaluates LLMs in two modes:
 
 ### Reproducing the Paper Benchmark
 
-The benchmark in the paper is reproduced in four stages. Sample data (E3SM output and GRDC streamflow) is not included in this repository to keep it lightweight — a frozen snapshot of this code together with the sample data and full per-model benchmark outputs is archived on Zenodo (DOI: 10.5281/zenodo.19350842).
+The benchmark in the paper is reproduced in five stages. Sample data (E3SM output and GRDC streamflow) is not included in this repository to keep it lightweight. Download the Zenodo v2 data release from <https://zenodo.org/records/20584449>.
 
 ```bash
-# 1. Download sample data from Zenodo and unpack into data/
+# 1. Download sample data from Zenodo v2 and unpack into data/
 #    (produces data/sample/e3sm/... and data/sample/obs/...)
 
 # 2. Run the reference workflows to generate ground-truth outputs
@@ -237,7 +250,7 @@ esflow/
 │   └── system_prompt.txt       # System prompt template for LLM workflow generation
 ├── tools/
 │   ├── generate_catalog.py      # Auto-generates tool_catalog.yaml
-│   ├── tool_catalog.yaml        # LLM-readable tool metadata (15 tools, 45 params)
+│   ├── tool_catalog.yaml        # LLM-readable tool metadata (24 tools, 92 input parameters)
 │   ├── core/                    # Framework internals
 │   │   ├── base.py              # @esmflow_tool, Param, ToolSpec, TOOL_REGISTRY
 │   │   ├── e3sm.py              # ESM utilities (cftime, file discovery, dataset opening)
@@ -248,19 +261,19 @@ esflow/
 │   ├── fetchers/                # Remote data fetchers (1)
 │   ├── loaders/                 # Data loading tools (1)
 │   ├── matchers/                # Gauge matching tools (1)
-│   ├── extractors/              # Time series & field extraction tools (3)
-│   ├── analyzers/               # Metrics, stats, bias, zonal tools (5)
-│   └── plotters/                # Visualization tools (4)
-├── data/sample/                 # Sample observation data (94 GRDC gauges)
-├── workflows/examples/          # Example & reference YAML workflows
+│   ├── extractors/              # Time series, basin, and field extraction tools (4)
+│   ├── analyzers/               # Metrics, stats, bias, budget, and zonal tools (7)
+│   └── plotters/                # Visualization tools (10)
+├── reference_workflows/         # Human-reviewed benchmark reference workflows
+├── data/sample/                 # Populated after downloading Zenodo sample data
 ├── benchmark/
 │   ├── protocol/                # System prompt + task descriptions (protocol mode)
 │   ├── baselines/               # Task descriptions for free-form Python (baseline mode)
 │   ├── run_benchmark.py         # Multi-model, mode-aware benchmark runner
 │   ├── structural_grading.py    # 3-step reproducible grading script
 │   └── results/                 # Outputs, scores, manual review labels
-├── scripts/                     # Data conversion utilities
-└── archive/v2/                  # Archived v2 tools (16 tools, ~90 params)
+├── visualize_workflow.py        # Workflow visualization helper
+└── workflow_to_dag.py           # Workflow DAG conversion helper
 ```
 
 ## Disclaimer
