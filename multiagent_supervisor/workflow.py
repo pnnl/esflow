@@ -75,3 +75,7 @@ class Workflow(BaseModel):
     description: str
     settings: Settings
     steps: List[Step]
+
+    def to_yaml_dict(self) -> Dict[str, Any]:
+        """Return a plain dict matching run_workflow.py YAML expectations."""
+        return self.model_dump(exclude_none=True)
