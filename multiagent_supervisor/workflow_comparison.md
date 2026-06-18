@@ -1,57 +1,128 @@
 # Workflow Comparison
 
-- A: `multiagent_supervisor/workflow_test_run.yaml`
-- B: `multiagent_supervisor/workflow_benchmark_task04.yaml`
+Generated workflows for presentation to stakeholders.
+
+- Workflow A: `multiagent_supervisor/workflow_test_run.yaml` — Minimal precipitation bias pipeline
+- Workflow B: `multiagent_supervisor/workflow_benchmark_task04.yaml` — Benchmark streamflow FDC analysis
+
+---
 
 ## Summary
 
 | Field | Workflow A | Workflow B |
 |---|---|---|
-| Name | Precipitation Spatial Bias Workflow | E3SM MOSART Streamflow FDC Analysis (1985-1989) |
-| Description focus | Precipitation spatial bias | Streamflow FDC benchmarking |
-| Step count | 5 | 6 |
-| Case name | test_run | sample.v3.LR.historical |
-| Data dir | ../data | ./data/sample/e3sm/ |
-| Output dir | ../outputs | ./output/task04_streamflow_fdc |
+| **Name** | Minimal Precipitation Spatial Bias Workflow | E3SM River Discharge FDC Analysis (1985-1989) |
+| **Focus** | Map-based precipitation bias for model validation | Distributional metrics for streamflow skill assessment |
+| **Step count** | 4 | 6 |
+| **Complexity** | Minimal (smoke-test style) | Comprehensive (benchmark style) |
+| **Case name** | test_run | sample.v3.LR.historical |
+| **Data source** | ../data | ./data/sample/e3sm/ |
+| **Output location** | outputs | ./output/task04_streamflow_fdc |
+
+---
 
 ## Tool Coverage
 
-- Only in A: compute_spatial_bias, extract_gridded_field, fetch_ilamb_data, plot_bias_comparison
-- Only in B: compute_fdc_metrics, extract_e3sm_timeseries, extract_obs_timeseries, load_obs_metadata, match_to_grid, plot_fdc
-- Shared: -
+**Workflow A tools:**
+- `fetch_ilamb_data` — Ingest observational data (GPCP precipitation)
+- `extract_gridded_field` — Extract model precipitation field
+- `compute_spatial_bias` — Compute spatial bias between fields
+- `plot_bias_comparison` — Visualize 3-panel comparison
+
+**Workflow B tools:**
+- `load_obs_metadata` — Load gauge metadata
+- `match_to_grid` — Align gauge locations to model grid
+- `extract_e3sm_timeseries` — Extract model discharge timeseries
+- `extract_obs_timeseries` — Extract observational discharge timeseries
+- `compute_fdc_metrics` — Compute FDC distributional metrics
+- `plot_fdc` — Create FDC comparison map and panels
+
+**Tool overlap:** None (both workflows use domain-specific tools)
+
+---
 
 ## Step Role Alignment
 
-| Role | Workflow A step | Tool | Workflow B step | Tool |
+| Role | Workflow A | Tool | Workflow B | Tool |
 |---|---|---|---|---|
-| Ingest | fetch_ilamb_precip | fetch_ilamb_data | load_metadata | load_obs_metadata |
-| Align / match | - | - | match_gauges_to_grid | match_to_grid |
-| Extract model | extract_e3sm_precip | extract_gridded_field | extract_e3sm_discharge | extract_e3sm_timeseries |
-| Extract obs | extract_obs_precip_field | extract_gridded_field | extract_obs_discharge | extract_obs_timeseries |
-| Diagnose | compute_precip_spatial_bias | compute_spatial_bias | compute_fdc_metrics_1985_1989 | compute_fdc_metrics |
-| Visualize | plot_precip_bias_comparison | plot_bias_comparison | plot_fdc_comparison_1985_1989 | plot_fdc |
+| **Ingest** | fetch_gpcp_precip | fetch_ilamb_data | load_gauge_metadata | load_obs_metadata |
+| **Align / Match** | — | — | match_gauges_to_grid | match_to_grid |
+| **Extract model** | extract_e3sm_precip_field | extract_gridded_field | extract_discharge_timeseries | extract_e3sm_timeseries |
+| **Extract obs** | (obs included in fetch) | — | extract_obs_discharge | extract_obs_timeseries |
+| **Diagnose** | compute_precip_spatial_bias | compute_spatial_bias | (FDC analysis) | compute_fdc_metrics |
+| **Visualize** | plot_precip_bias_comparison | plot_bias_comparison | (FDC map + panels) | plot_fdc |
 
-## Dependency Chains
+---
 
-### Workflow A
+## Dependency Graphs
 
-- fetch_ilamb_precip: (no step refs)
-- extract_e3sm_precip: settings.data_dir, settings.case_name
-- extract_obs_precip_field: fetch_ilamb_precip.outputs.data_file
-- compute_precip_spatial_bias: extract_e3sm_precip.outputs.field_file, extract_obs_precip_field.outputs.field_file
-- plot_precip_bias_comparison: extract_obs_precip_field.outputs.field_file, extract_e3sm_precip.outputs.field_file, compute_precip_spatial_bias.outputs.bias_file, compute_precip_spatial_bias.outputs.stats_file
+### Workflow A (Linear 4-step pipeline)
 
-### Workflow B
+```
+fetch_gpcp_precip
+    ↓
+extract_e3sm_precip_field
+    ↓
+compute_precip_spatial_bias ← (depends on both fetched and extracted)
+    ↓
+plot_precip_bias_comparison ← (depends on all previous steps)
+```
 
-- load_metadata: (no step refs)
-- match_gauges_to_grid: load_metadata.outputs.metadata_file, settings.data_dir, settings.case_name
-- extract_e3sm_discharge: settings.data_dir, settings.case_name, match_gauges_to_grid.outputs.matched_file
-- extract_obs_discharge: load_metadata.outputs.metadata_file
-- compute_fdc_metrics_1985_1989: extract_e3sm_discharge.outputs.timeseries_file, extract_obs_discharge.outputs.timeseries_file
-- plot_fdc_comparison_1985_1989: compute_fdc_metrics_1985_1989.outputs.metrics_file, compute_fdc_metrics_1985_1989.outputs.fdc_file, load_metadata.outputs.metadata_file
+**Dependency chain:**
+- `fetch_gpcp_precip`: No step refs (root)
+- `extract_e3sm_precip_field`: settings.data_dir, settings.case_name
+- `compute_precip_spatial_bias`: extract_e3sm_precip_field.outputs.field_file, fetch_gpcp_precip.outputs.data_file
+- `plot_precip_bias_comparison`: All upstream outputs
 
-## Notes
+### Workflow B (6-step DAG with parallel extraction)
 
-- Workflow A is a compact map-bias pipeline with one observational source and gridded field operations.
-- Workflow B adds metadata loading and grid matching, then evaluates distributional behavior via FDC metrics.
-- Workflow B is closer to benchmark-style hydrologic evaluation, while A is a minimal smoke-style diagnostic flow.
+```
+load_gauge_metadata
+    ├→ match_gauges_to_grid ←→ extract_discharge_timeseries
+    │                              ↓
+    └→ extract_obs_discharge       ↓
+        └─────────────────→ compute_fdc_metrics
+                               ↓
+                           plot_fdc ← (metadata for gauge labels)
+```
+
+**Dependency chain:**
+- `load_gauge_metadata`: No step refs (root)
+- `match_gauges_to_grid`: load_gauge_metadata.outputs, settings refs
+- `extract_discharge_timeseries`: settings refs + match_gauges_to_grid.outputs
+- `extract_obs_discharge`: load_gauge_metadata.outputs
+- `compute_fdc_metrics`: extract_discharge_timeseries.outputs + extract_obs_discharge.outputs
+- `plot_fdc`: compute_fdc_metrics.outputs + load_gauge_metadata.outputs
+
+---
+
+## Key Observations
+
+1. **Workflow A** is a minimal smoke-test style pipeline:
+   - Demonstrates end-to-end capability (fetch → compute → visualize)
+   - Suitable for quick validation and testing
+   - 4 steps, ~15 params total
+
+2. **Workflow B** is a production-grade benchmark workflow:
+   - Adds metadata alignment step (required for gauge-based evaluation)
+   - Enables parallel extraction (model + obs) after matching
+   - Captures distributional metrics (FDC) beyond simple bias
+   - 6 steps, ~30 params total, reflects real-world hydrology evaluation
+
+3. **Architecture patterns:**
+   - Both use `${settings.X}` for case_name and data_dir templating
+   - Both use `${step_id.outputs.key}` for inter-step dependencies
+   - Workflow B demonstrates more complex branching and multi-source aggregation
+
+4. **Generalizability:**
+   - Workflow A pattern (ingestion → domain computation → visualization) is replicable across ESM variables
+   - Workflow B pattern (metadata → align → parallel extract → aggregate → analyze) applies to station-based evaluations
+
+---
+
+## Generated by
+
+Refactored ESMFlow supervisor with:
+- Agents in separate modules (`agents/{data_discovery,extraction,diagnostics,water_cycle,visualization}.py`)
+- Shared config and state in top-level `common/` directory
+- Clean supervisor orchestration in `app.py`
