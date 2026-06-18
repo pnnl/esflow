@@ -1,128 +1,77 @@
 # Workflow Comparison
 
-Generated workflows for presentation to stakeholders.
+This comparison contrasts the generated task-04 workflow in the workspace with the four benchmark reference runs provided in context.
 
-- Workflow A: `multiagent_supervisor/workflow_test_run.yaml` — Minimal precipitation bias pipeline
-- Workflow B: `multiagent_supervisor/workflow_benchmark_task04.yaml` — Benchmark streamflow FDC analysis
+- Generated workflow: `multiagent_supervisor/workflow_benchmark_task04.yaml`
+- Benchmark references: `benchmark/results/claude-haiku-4-5-20251001_protocol/task_04_streamflow_fdc/run1.yaml` through `run4.yaml`
 
----
+## Executive Summary
 
-## Summary
+The generated workflow is structurally aligned with the benchmark runs: it uses the same six-tool sequence, the same dependency topology, and the same scientific objective. The differences are primarily in configuration granularity, step/output naming, and output artifact names. The benchmark runs themselves are effectively identical apart from their run-specific `output_dir` values.
 
-| Field | Workflow A | Workflow B |
+## Structural Equivalence
+
+| Dimension | Generated workflow | Benchmark runs |
 |---|---|---|
-| **Name** | Minimal Precipitation Spatial Bias Workflow | E3SM River Discharge FDC Analysis (1985-1989) |
-| **Focus** | Map-based precipitation bias for model validation | Distributional metrics for streamflow skill assessment |
-| **Step count** | 4 | 6 |
-| **Complexity** | Minimal (smoke-test style) | Comprehensive (benchmark style) |
-| **Case name** | test_run | sample.v3.LR.historical |
-| **Data source** | ../data | ./data/sample/e3sm/ |
-| **Output location** | outputs | ./output/task04_streamflow_fdc |
+| **Tool sequence** | `load_obs_metadata` → `match_to_grid` → `extract_e3sm_timeseries` → `extract_obs_timeseries` → `compute_fdc_metrics` → `plot_fdc` | Same |
+| **Dependency topology** | Linear prefix, parallel extraction branch, final join at metrics/plot | Same |
+| **Domain intent** | Gauge-based streamflow evaluation for 1985-1989 | Same |
+| **Step count** | 6 | 6 |
+| **Benchmark variability** | Single generated artifact | Four benchmark runs, structurally identical |
 
----
+## Configuration Differences
 
-## Tool Coverage
+| Aspect | Generated workflow | Benchmark runs | Technical implication |
+|---|---|---|---|
+| **Settings scope** | Compact settings block | Expanded settings block | The benchmark encodes more workflow context directly in `settings`, reducing dependence on literal values inside step params. |
+| **Observation path** | `obs_dir: ./data/sample/obs/streamflow/` is hardcoded in the step | `obs_dir` is carried in settings and referenced as `${settings.obs_dir}` | The benchmark is more parameterized and easier to retarget. |
+| **Gauge metadata path** | Hardcoded in the metadata step | Carried as `${settings.gauge_metadata}` | Benchmark form is more declarative and less duplicated. |
+| **Model component** | Inline `mosart` in step params | `${settings.component}` | Benchmark form centralizes domain configuration. |
+| **Variable/frequency/year set** | Inline literals | `${settings.variable}`, `${settings.frequency}`, `${settings.years}` | Benchmark form is more reusable and auditable. |
 
-**Workflow A tools:**
-- `fetch_ilamb_data` — Ingest observational data (GPCP precipitation)
-- `extract_gridded_field` — Extract model precipitation field
-- `compute_spatial_bias` — Compute spatial bias between fields
-- `plot_bias_comparison` — Visualize 3-panel comparison
+## Naming and Artifact Differences
 
-**Workflow B tools:**
-- `load_obs_metadata` — Load gauge metadata
-- `match_to_grid` — Align gauge locations to model grid
-- `extract_e3sm_timeseries` — Extract model discharge timeseries
-- `extract_obs_timeseries` — Extract observational discharge timeseries
-- `compute_fdc_metrics` — Compute FDC distributional metrics
-- `plot_fdc` — Create FDC comparison map and panels
+| Artifact | Generated workflow | Benchmark runs |
+|---|---|---|
+| **Workflow name** | `E3SM River Discharge FDC Analysis (1985-1989)` | `E3SM River Discharge FDC Distribution Analysis` |
+| **Extract step id** | `extract_discharge_timeseries` | `extract_sim_discharge` |
+| **Timeseries output file** | `discharge_timeseries_daily.csv` | `sim_discharge_daily.csv` |
+| **Observed output file** | `obs_discharge_1985_1989.csv` | `obs_discharge_daily.csv` |
+| **Metrics outputs** | `fdc_metrics_1985_1989.csv`, `fdc_percentiles_1985_1989.csv` | `fdc_metrics.csv`, `fdc_percentiles.csv` |
+| **Plot output** | `fdc_comparison_wasserstein_6gauges.png` | `fdc_comparison_map_and_panels.png` |
 
-**Tool overlap:** None (both workflows use domain-specific tools)
+These naming differences do not change the workflow topology, but they do affect traceability, reproducibility, and downstream file expectations. A technical reviewer should treat them as semantic differences in artifact contract, not just cosmetic renaming.
 
----
+## Benchmark Run Consistency
 
-## Step Role Alignment
+- `run1.yaml`, `run2.yaml`, `run3.yaml`, and `run4.yaml` share the same step definitions.
+- The only visible variation across the four runs is the run-specific `output_dir` path.
+- This indicates the benchmark protocol is stable for task 04 and the four runs are suitable as a consistent reference set rather than independent workflow variants.
 
-| Role | Workflow A | Tool | Workflow B | Tool |
-|---|---|---|---|---|
-| **Ingest** | fetch_gpcp_precip | fetch_ilamb_data | load_gauge_metadata | load_obs_metadata |
-| **Align / Match** | — | — | match_gauges_to_grid | match_to_grid |
-| **Extract model** | extract_e3sm_precip_field | extract_gridded_field | extract_discharge_timeseries | extract_e3sm_timeseries |
-| **Extract obs** | (obs included in fetch) | — | extract_obs_discharge | extract_obs_timeseries |
-| **Diagnose** | compute_precip_spatial_bias | compute_spatial_bias | (FDC analysis) | compute_fdc_metrics |
-| **Visualize** | plot_precip_bias_comparison | plot_bias_comparison | (FDC map + panels) | plot_fdc |
+## Technical Assessment
 
----
+1. **The generated workflow is topology-compatible with the benchmark.**
+   - No missing stages.
+   - No extra branch or aggregate logic.
+   - Same science workflow: metadata load, gauge-to-grid match, dual extraction, FDC metric computation, plotting.
 
-## Dependency Graphs
+2. **The benchmark form is more parameterized.**
+   - It keeps reusable inputs in `settings` instead of inlining them in step params.
+   - This reduces duplication and makes the workflow easier to retarget or regenerate.
 
-### Workflow A (Linear 4-step pipeline)
+3. **The generated artifact names are less canonical.**
+   - Step ids and file names are functionally valid but diverge from the benchmark’s naming convention.
+   - For a technical audience, that matters because naming conventions often feed into validation, QA, and post-processing automation.
 
-```
-fetch_gpcp_precip
-    ↓
-extract_e3sm_precip_field
-    ↓
-compute_precip_spatial_bias ← (depends on both fetched and extracted)
-    ↓
-plot_precip_bias_comparison ← (depends on all previous steps)
-```
+4. **The benchmark references are a better baseline if the goal is fidelity to the protocol.**
+   - If the objective is to match the benchmark protocol exactly, the benchmark runs should be treated as the normative reference.
+   - If the objective is simply to preserve the workflow shape, the generated workflow is acceptable but should be normalized to the benchmark naming and settings style.
 
-**Dependency chain:**
-- `fetch_gpcp_precip`: No step refs (root)
-- `extract_e3sm_precip_field`: settings.data_dir, settings.case_name
-- `compute_precip_spatial_bias`: extract_e3sm_precip_field.outputs.field_file, fetch_gpcp_precip.outputs.data_file
-- `plot_precip_bias_comparison`: All upstream outputs
+## Presentation Framing
 
-### Workflow B (6-step DAG with parallel extraction)
+For a technical audience, the safest framing is:
 
-```
-load_gauge_metadata
-    ├→ match_gauges_to_grid ←→ extract_discharge_timeseries
-    │                              ↓
-    └→ extract_obs_discharge       ↓
-        └─────────────────→ compute_fdc_metrics
-                               ↓
-                           plot_fdc ← (metadata for gauge labels)
-```
-
-**Dependency chain:**
-- `load_gauge_metadata`: No step refs (root)
-- `match_gauges_to_grid`: load_gauge_metadata.outputs, settings refs
-- `extract_discharge_timeseries`: settings refs + match_gauges_to_grid.outputs
-- `extract_obs_discharge`: load_gauge_metadata.outputs
-- `compute_fdc_metrics`: extract_discharge_timeseries.outputs + extract_obs_discharge.outputs
-- `plot_fdc`: compute_fdc_metrics.outputs + load_gauge_metadata.outputs
-
----
-
-## Key Observations
-
-1. **Workflow A** is a minimal smoke-test style pipeline:
-   - Demonstrates end-to-end capability (fetch → compute → visualize)
-   - Suitable for quick validation and testing
-   - 4 steps, ~15 params total
-
-2. **Workflow B** is a production-grade benchmark workflow:
-   - Adds metadata alignment step (required for gauge-based evaluation)
-   - Enables parallel extraction (model + obs) after matching
-   - Captures distributional metrics (FDC) beyond simple bias
-   - 6 steps, ~30 params total, reflects real-world hydrology evaluation
-
-3. **Architecture patterns:**
-   - Both use `${settings.X}` for case_name and data_dir templating
-   - Both use `${step_id.outputs.key}` for inter-step dependencies
-   - Workflow B demonstrates more complex branching and multi-source aggregation
-
-4. **Generalizability:**
-   - Workflow A pattern (ingestion → domain computation → visualization) is replicable across ESM variables
-   - Workflow B pattern (metadata → align → parallel extract → aggregate → analyze) applies to station-based evaluations
-
----
-
-## Generated by
-
-Refactored ESMFlow supervisor with:
-- Agents in separate modules (`agents/{data_discovery,extraction,diagnostics,water_cycle,visualization}.py`)
-- Shared config and state in top-level `common/` directory
-- Clean supervisor orchestration in `app.py`
+- The generated workflow reproduces the benchmark task-04 structure.
+- The benchmark runs are internally consistent and provide the canonical reference implementation.
+- The main deltas are configuration packaging and artifact naming, not workflow logic.
+- If exact protocol parity matters, align the generated workflow’s settings and output names to the benchmark convention before comparing performance or scores.
