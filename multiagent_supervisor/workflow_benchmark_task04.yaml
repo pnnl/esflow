@@ -1,0 +1,78 @@
+name: E3SM MOSART Streamflow FDC Analysis (1985-1989)
+description: Compare E3SM MOSART simulated river discharge against observations using
+  flow duration curve (FDC) distributional metrics. Computes per-gauge volume bias,
+  Wasserstein distance, and quantile ratios (Q10, Q50, Q90) for 1985-1989, and visualizes
+  results on a map with FDC comparison panels for six major river gauges (Amazon,
+  Missouri, Columbia, Danube, Mekong, Orange).
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: ./output/task04_streamflow_fdc
+steps:
+- id: load_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ./data/sample/obs/gauge_metadata.csv
+  outputs:
+    metadata_file: gauge_metadata_validated.csv
+    n_gauges: n_gauges.txt
+- id: match_gauges_to_grid
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+  outputs:
+    matched_file: matched_gauges.csv
+    n_matched: n_matched.txt
+- id: extract_e3sm_discharge
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: mosart
+    variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+    locations_file: ${match_gauges_to_grid.outputs.matched_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    frequency: daily
+  outputs:
+    timeseries_file: e3sm_discharge_1985_1989_daily.csv
+    n_locations: n_e3sm_locations.txt
+- id: extract_obs_discharge
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ./data/sample/obs/streamflow/
+    gauge_metadata: ${load_metadata.outputs.metadata_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    timeseries_file: obs_discharge_1985_1989_daily.csv
+    n_gauges: n_obs_gauges.txt
+- id: compute_fdc_metrics_1985_1989
+  tool: compute_fdc_metrics
+  params:
+    sim_file: ${extract_e3sm_discharge.outputs.timeseries_file}
+    obs_file: ${extract_obs_discharge.outputs.timeseries_file}
+  outputs:
+    metrics_file: fdc_metrics_1985_1989.csv
+    fdc_file: fdc_percentiles_1985_1989.csv
+- id: plot_fdc_comparison_1985_1989
+  tool: plot_fdc
+  params:
+    metrics_file: ${compute_fdc_metrics_1985_1989.outputs.metrics_file}
+    fdc_file: ${compute_fdc_metrics_1985_1989.outputs.fdc_file}
+    locations_file: ${load_metadata.outputs.metadata_file}
+    metric: wasserstein
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    plot_file: fdc_wasserstein_map_and_panels_1985_1989.png
