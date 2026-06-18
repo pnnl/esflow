@@ -1,6 +1,6 @@
 # Local development instructions
 
-Start the webapp with by activating the virtual environment and then running `uvicorn app:app --host 127.0.0.1 --port 7932`
+Start the webapp with by activating the virtual environment and then running `uvicorn app:app --env-file .env --host 127.0.0.1 --port 7932`
 
 Here is a sample query you can you to interact with the chatbot
 

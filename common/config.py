@@ -7,7 +7,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _HERE = Path(__file__).resolve().parent
-_REPO_ROOT = _HERE.parent.parent
+_REPO_ROOT = _HERE.parent
 
 
 class RuntimeConfig(BaseSettings):
