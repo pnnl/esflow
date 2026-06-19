@@ -4,11 +4,9 @@ from pydantic import BaseModel, Field
 
 class Settings(BaseModel):
     """Settings configuration for a workflow."""
-    case_name: str
+    case_name: Optional[str] = None
     data_dir: str
     output_dir: str
-    style: Optional[str] = None
-
 
 class Step(BaseModel):
     """A single step in a workflow."""
