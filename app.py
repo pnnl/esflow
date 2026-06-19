@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import os
 from pathlib import Path
 
@@ -41,11 +42,15 @@ async def serialize_workflow_to_yaml(ctx: RunContext[WorkflowState]) -> str:
 async def write_yaml_string_to_output(
     ctx: RunContext[WorkflowState],
     yaml_content: str,
-    file_name: str = "generated_workflow.yaml",
+    file_name: str = "",
 ) -> str:
     """Write a YAML string to a file in the configured output directory."""
     output_dir = Path(ctx.deps.workflow.settings.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not file_name:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"generated_workflow_{timestamp}.yaml"
 
     safe_name = Path(file_name).name
     if not safe_name.endswith((".yaml", ".yml")):
@@ -71,8 +76,15 @@ supervisor: Agent[WorkflowState, Workflow] = Agent(
     ],
     instructions=load_prompt(
         "You are the Workflow Planning and Routing supervisor. "
-        "Break requests into subproblems and call subagents in dependency order: "
-        "data -> extraction -> diagnostics/water cycle -> visualization. "
+        "Decide which subagents are needed based on missing information in the user request and current workflow state. "
+        "Do not call a subagent unless it adds required steps. "
+        "Use this conditional order only when needed: "
+        "data discovery if required external data or metadata is missing; "
+        "extraction if variables, fields, or timeseries must be produced; "
+        "diagnostics or water cycle if derived metrics are requested; "
+        "visualization only if plots are requested. "
+        "If required inputs are already available from settings or prior step outputs, skip data discovery. "
+        "If no new steps are needed, return the workflow unchanged. "
         "After composing steps, return the complete structured Workflow object."
     ),
 )
