@@ -1,4 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional, Union
+from pathlib import Path
+import yaml
 from pydantic import BaseModel, Field
 
 
@@ -77,3 +79,14 @@ class Workflow(BaseModel):
     def to_yaml_dict(self) -> Dict[str, Any]:
         """Return a plain dict matching run_workflow.py YAML expectations."""
         return self.model_dump(exclude_none=True)
+
+    def write_to_file(self, path: Union[str, Path]) -> None:
+        """Write the workflow YAML dict to a file.
+        
+        Args:
+            path: File path where YAML will be written.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            yaml.dump(self.to_yaml_dict(), f, default_flow_style=False, sort_keys=False)

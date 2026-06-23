@@ -13,3 +13,7 @@ Create a workflow to:
 
 Write the workflow as yaml to the output folder
 ```
+
+Running evals
+
+From the root run `python -m evals.evals`
