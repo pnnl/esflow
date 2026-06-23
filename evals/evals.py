@@ -1,0 +1,91 @@
+from dataclasses import dataclass
+import asyncio
+import tempfile
+from pathlib import Path
+
+from tenacity import stop_after_attempt, wait_random_exponential, retry_if_exception_type
+
+from pydantic_evals import Case, Dataset
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
+from pydantic_ai.exceptions import ModelAPIError
+
+from workflow import Workflow
+from app import build_workflow, default_settings
+from evals.run_workflow import validate_workflow
+
+
+@dataclass
+class IsValidWorkflow(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> EvaluationReason | bool:
+        workflow: Workflow = ctx.output
+        
+        # Write workflow to a temp file
+        with tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        workflow.write_to_file(tmp_path)
+        
+        # Validate the workflow
+        catalog_path = Path(__file__).parent.parent / 'tool_catalog.yaml'
+        errors = validate_workflow(workflow.to_yaml_dict(), catalog_path=catalog_path)
+        
+        if errors:
+            return EvaluationReason(
+                value=False,
+                reason=f"Validation failed:\n" + "\n".join(f"  - {e}" for e in errors),
+            )
+        else:
+            return True
+
+# Create a dataset with test cases
+dataset = Dataset(
+    name='validation',
+    cases=[
+        Case(
+            name='observation_summary',
+            inputs='./evals/task_01_obs_summary.txt',
+        ),
+        Case(
+            name='seasonal_runoff',
+            inputs='./evals/task_02_seasonal_runoff.txt',
+        ),
+        Case(
+            name='et_benchmark',
+            inputs='./evals/task_03_et_benchmark.txt',
+        ),
+        Case(
+            name='streamflow_fdc',
+            inputs='./evals/task_04_streamflow_fdc.txt',
+        ),
+        Case(
+            name='basin_streamflow',
+            inputs='./evals/task_05_basin_streamflow.txt',
+        ),
+        Case(
+            name='water_balance',
+            inputs='./evals/task_06_water_balance.txt',
+        ),
+        Case(
+            name='integrated_diagnostic',
+            inputs='./evals/task_07_integrated_diagnostic.txt',
+        ),
+    ],
+    evaluators=[IsValidWorkflow()],
+)
+
+# Define the function to evaluate
+def generate_workflow(task_file: str) -> Workflow:
+    with open(task_file, 'r') as f:
+        task_description = f.read()
+    return asyncio.run(build_workflow(task_description, default_settings()))
+
+task_retry_config = {
+    'stop': stop_after_attempt(3),  # Stop after 3 attempts
+    'wait': wait_random_exponential(max=60),  # Exponential backoff: 1s, 2s, 4s, 8s (capped at 10s)
+    'retry': retry_if_exception_type(ModelAPIError),
+    'reraise': True,  # Re-raise the original exception after exhausting retries
+}
+
+# Run the evaluation
+report = dataset.evaluate_sync(generate_workflow, retry_task=task_retry_config, max_concurrency=2)
+# Print the results
+report.print(include_reasons=True)

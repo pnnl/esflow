@@ -36,7 +36,7 @@ model = AnthropicModel(
 def load_prompt(extra_instructions: str = "") -> str:
     """Load system prompt and tool catalog, optionally with extra instructions."""
     base_prompt = (_HERE.parent / "system_prompt.md").read_text(encoding="utf-8")
-    tool_catalog = (_REPO_ROOT / "tool_catalog_generated.yaml").read_text(encoding="utf-8")
+    tool_catalog = (_REPO_ROOT / "tool_catalog.yaml").read_text(encoding="utf-8")
     return (
         f"{base_prompt}\n\n"
         f"## Tool Catalog\n\n"
