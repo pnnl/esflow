@@ -19,12 +19,15 @@ expressible as code. We therefore split grading into three steps:
 
   Step 2 — Success detection (protocol mode only)
       A protocol run is SUCCESS iff it passed Step 1 and its key data
-      file matches the reference within rtol=1e-2 (1 %). Protocol runs
-      go through the validated tool library, so the key output filename
-      is predictable and the comparison is well-defined. We do NOT
-      auto-detect success in baseline runs because filenames vary too
-      much across free-form Python scripts and the file the figure was
-      drawn from is not always preserved.
+      file is numerically identical to the reference within float64
+      precision (rtol=1e-12, atol=1e-15). This is cprnc-style
+      verification, slackened by ~1e-12 to absorb float64 reassociation
+      noise from differently-ordered reductions in LLM-generated
+      workflows. Protocol runs go through the validated tool library,
+      so the key output filename is predictable and the comparison is
+      well-defined. We do NOT auto-detect success in baseline runs
+      because filenames vary too much across free-form Python scripts
+      and the file the figure was drawn from is not always preserved.
 
   Step 3 — Manual review (everything else)
       All non-crash baseline runs, plus protocol runs that are not
@@ -80,9 +83,13 @@ RUNS = [1, 2, 3, 4]
 REF_MODEL = "claude-opus-4-6"
 REF_RUN = 2
 
-# Numerical tolerance for the success check (1 %).
-RTOL = 1e-2
-ATOL = 1e-9
+# Numerical tolerance for the success check.
+# Set to float64 precision following cprnc-style verification, but allowing
+# the last ~1e-12 of reassociation noise: different LLM-generated workflows
+# perform reductions in different orders and can disagree at one float64 ULP
+# (~2e-16) without any scientific difference.
+RTOL = 1e-12
+ATOL = 1e-15
 
 # Required final deliverable per task.
 #   "csv" -> a non-trivial CSV must exist (T1 only)

@@ -194,7 +194,7 @@ The paper's reference run (`claude-opus-4-6` protocol `run2`) is pre-included in
 | Step | What it checks | Applies to | Auto? |
 |------|---------------|------------|-------|
 | **Step 1: Crash** | Final deliverable missing (CSV for T1, PNG for T2–T7) | Both modes | Yes |
-| **Step 2: Success** | Key data file matches reference within 1% tolerance | Protocol only | Yes |
+| **Step 2: Success** | Key data file numerically identical to reference within float64 precision (rtol=1e-12, atol=1e-15) | Protocol only | Yes |
 | **Step 3: Manual review** | Human assigns silent failure or obvious failure | Undetermined | No |
 
 **Final grades**: crash, success, silent failure, obvious failure.
