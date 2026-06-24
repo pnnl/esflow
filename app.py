@@ -9,7 +9,7 @@ from workflow import Settings, Workflow
 
 from agents import water_cycle
 from common import WorkflowState
-from common.config import model, load_prompt
+from common.config import MODELS, model, load_prompt
 
 
 def default_settings() -> Settings:
@@ -70,4 +70,4 @@ async def build_workflow(user_goal: str, settings: Settings) -> Workflow:
     result = await supervisor.run(user_goal, deps=state)
     return result.output
 
-app = supervisor.to_web(deps=_bootstrap_workflow_state())
+app = supervisor.to_web(deps=_bootstrap_workflow_state(), models=MODELS)
