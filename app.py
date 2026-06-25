@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 from pydantic_ai import Agent, RunContext
+from starlette.staticfiles import StaticFiles
 
 from agents import data_discovery, diagnostics, extraction, visualization
 from workflow import Settings, Workflow
@@ -159,6 +161,7 @@ async def build_workflow(user_goal: str, settings: Settings) -> Workflow:
 app = supervisor.to_web(
     deps=_bootstrap_workflow_state(),
     models=MODELS,
+    html_source=Path(__file__).parent / "web_ui.html",
     instructions=(
         "You are chatting interactively. Greet the user briefly and explain you compose "
         "ESM analysis workflows from a validated tool library. "
@@ -168,4 +171,11 @@ app = supervisor.to_web(
         "supply those values instead of guessing or emitting null/placeholder params. "
         "Only return the final structured Workflow once check_completeness reports no gaps."
     ),
+)
+
+# Serve ESFlow branding assets (logo, favicons) referenced by web_ui.html.
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
 )

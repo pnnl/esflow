@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/static/favicons/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicons/favicon-32x32.png" />
+    <link rel="shortcut icon" href="/static/favicons/favicon.ico" />
+    <link rel="apple-touch-icon" href="/static/favicons/apple-touch-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESFlow</title>
+    <!-- Chat app (layout + chat UI) from the pydantic-ai CDN bundle; left untouched so its layout works. -->
+    <script type="module" crossorigin src="https://cdn.jsdelivr.net/npm/@pydantic/ai-chat-ui/dist/assets/index-CxnQFBRr.js"></script>
+    <link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/npm/@pydantic/ai-chat-ui/dist/assets/index-BGxl8vM0.css">
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!--
+      In-app rebrand: the "Pydantic AI" wordmark/logo are rendered by the CDN bundle, so we
+      swap them after the app mounts. This is a best-effort DOM patch (it depends on the app's
+      current markup); if the app changes, it simply no-ops and the original branding shows.
+    -->
+    <script>
+      (function () {
+        var LOGO_URL = "/static/logo.svg";
+        var TITLE = "ESFlow";
+        var BRAND_TEXT = "(Powered by Pydantic AI)";
+        // Small intro shown under the brand. Edit this text freely.
+        var INSTRUCTIONS =
+          "Describe an Earth System Model analysis and ESFlow composes a reproducible " +
+          "workflow from a validated tool library — no code, just chained tools. " +
+          "e.g. “Extract global QRUNOFF from ELM for 1985–1989, compute the " +
+          "area-weighted global mean, and plot a map.”";
+        var logoSwapped = false;
+        var instrAdded = false;
+        var tries = 0;
+
+        function rebrand() {
+          document.title = TITLE;
+
+          // 1) Rewrite the original "Pydantic AI" wordmark to the brand text. Match the node
+          //    exactly so repeated polls never re-wrap the already-replaced text.
+          var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+          var node;
+          while ((node = walker.nextNode())) {
+            if (node.nodeValue && node.nodeValue.trim() === "Pydantic AI") {
+              node.nodeValue = BRAND_TEXT;
+            }
+          }
+
+          // 2) Swap the brand logo once: the element whose text is exactly the brand text.
+          if (!logoSwapped) {
+            var candidates = document.querySelectorAll("a, header, div, span");
+            for (var i = 0; i < candidates.length; i++) {
+              var el = candidates[i];
+              if (el.getAttribute("data-esflow-done")) continue;
+              if (el.textContent && el.textContent.trim() === BRAND_TEXT) {
+                var icon = el.querySelector("svg, img");
+                if (icon) {
+                  var img = document.createElement("img");
+                  img.src = LOGO_URL;
+                  img.alt = TITLE;
+                  img.style.height = "24px";
+                  img.style.width = "auto";
+                  icon.replaceWith(img);
+                  el.setAttribute("data-esflow-done", "1");
+                  logoSwapped = true;
+
+                  // Add a small intro paragraph just below the brand.
+                  if (!instrAdded) {
+                    var instr = document.createElement("div");
+                    instr.id = "esflow-instructions";
+                    instr.style.cssText =
+                      "padding:10px 14px; margin-top:4px; font-size:12px; line-height:1.5; " +
+                      "color:#6b7280; border-top:1px solid #ececf0;";
+                    instr.textContent = INSTRUCTIONS;
+                    el.insertAdjacentElement("afterend", instr);
+                    instrAdded = true;
+                  }
+
+                  // Hide the brand (logo + text) and the intro when the sidebar is collapsed.
+                  // Track the widest the brand container gets, then hide once it drops below 60%.
+                  var host = el.parentElement;
+                  if (host && "ResizeObserver" in window) {
+                    var maxW = 0;
+                    var applyCollapse = function () {
+                      var w = host.clientWidth;
+                      if (w > maxW) maxW = w;
+                      var collapsed = maxW > 0 && w < maxW * 0.6;
+                      el.style.display = collapsed ? "none" : "";
+                      instr.style.display = collapsed ? "none" : "";
+                    };
+                    new ResizeObserver(applyCollapse).observe(host);
+                    applyCollapse();
+                  }
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        // Poll until the brand renders, then stop (no permanent observer = no chat lag).
+        function tick() {
+          rebrand();
+          tries += 1;
+          if (!logoSwapped && tries < 20) setTimeout(tick, 500);
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", tick);
+        } else {
+          tick();
+        }
+      })();
+    </script>
+  </body>
+</html>
