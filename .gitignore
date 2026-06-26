@@ -3,3 +3,5 @@ __pycache__
 data
 .env
 outputs
+CLAUDE.md
+.claude
