@@ -10,8 +10,8 @@ from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorCont
 from pydantic_ai.exceptions import ModelAPIError
 
 from workflow import Workflow
-from app import build_workflow, default_settings
-from evals.run_workflow import validate_workflow
+from app import build_workflow_one_shot, default_settings
+from common.workflow_validation import validate_workflow
 
 
 @dataclass
@@ -25,8 +25,7 @@ class IsValidWorkflow(Evaluator):
         workflow.write_to_file(tmp_path)
         
         # Validate the workflow
-        catalog_path = Path(__file__).parent.parent / 'tool_catalog.yaml'
-        errors = validate_workflow(workflow.to_yaml_dict(), catalog_path=catalog_path)
+        errors = validate_workflow(workflow.to_yaml_dict())
         
         if errors:
             return EvaluationReason(
@@ -76,7 +75,7 @@ dataset = Dataset(
 def generate_workflow(task_file: str) -> Workflow:
     with open(task_file, 'r') as f:
         task_description = f.read()
-    return asyncio.run(build_workflow(task_description, default_settings()))
+    return asyncio.run(build_workflow_one_shot(task_description, default_settings()))
 
 task_retry_config = {
     'stop': stop_after_attempt(3),  # Stop after 3 attempts

@@ -13,7 +13,52 @@ from workflow import Settings, Workflow
 from agents import water_cycle
 from common import WorkflowState
 from common.config import MODELS, model, load_prompt
+from common.workflow_validation import validate_workflow
 
+
+SUPERVISOR_ROUTING_PROMPT = (
+    "You are the Workflow Planning and Routing supervisor. "
+    "First choose how to respond:\n"
+    "- If the user's message is a greeting, a question, ambiguous, or missing information "
+    "required to compose steps (e.g. variable, model case, years, data location), reply in "
+    "plain text: briefly ask a focused clarifying question. Do NOT fabricate a workflow or "
+    "invent placeholder settings or params.\n"
+    "- Only when the request is a complete, groundable analysis task, compose the workflow "
+    "and return the structured Workflow object (do not describe it in prose).\n"
+    "When composing, decide which subagents are needed based on missing information in the "
+    "user request and current workflow state. Do not call a subagent unless it adds required steps. "
+    "Use this conditional order only when needed: "
+    "data discovery if required external data or metadata is missing; "
+    "extraction if variables, fields, or timeseries must be produced; "
+    "diagnostics or water cycle if derived metrics are requested; "
+    "visualization only if plots are requested. "
+    "If required inputs are already available from settings or prior step outputs, skip data discovery. "
+    "Before returning any structured Workflow, call check_completeness and run_workflow_validation. "
+    "If either tool returns issues, ask the user for the missing information or corrections in plain text "
+    "instead of returning an invalid workflow. "
+    "If no new steps are needed, return the workflow unchanged."
+)
+
+ONESHOT_SUPERVISOR_PROMPT = (
+    "You are the one-shot Workflow Planning and Routing supervisor. "
+    "Produce the best complete Workflow in a single pass with no follow-up turn. "
+    "Return only the structured Workflow object, never prose. "
+    "Never ask clarifying questions and never return plain text. "
+    "Do not invent placeholder values, nulls, or unknown tokens for required params. "
+    "If a required value is not explicitly provided, use an existing ${settings.*} value or "
+    "a valid ${step_id.outputs.*} reference from prior steps; if neither is possible, omit that step. "
+    "Plan minimally: include only steps required to satisfy the request. "
+    "Select subagents only when they add needed steps, in this order when applicable: "
+    "data discovery for missing external datasets/metadata; "
+    "extraction for needed fields/timeseries; "
+    "diagnostics or water cycle for derived analyses; "
+    "visualization only when plots are explicitly requested. "
+    "Preserve validity: unique step IDs, known tool names only, and valid output references. "
+    "If required inputs already exist from settings or prior outputs, do not regenerate them. "
+    "Before returning, call check_completeness and run_workflow_validation. "
+    "Only return a Workflow when both tools report no issues. "
+    "If no new steps are needed, return the workflow unchanged."
+)
 
 def default_settings() -> Settings:
     """Build server-side default workflow settings for web requests."""
@@ -62,6 +107,11 @@ async def check_completeness(ctx: RunContext[WorkflowState]) -> list[str]:
     return gaps
 
 
+async def run_workflow_validation(ctx: RunContext[WorkflowState]) -> list[str]:
+    """Validate the current workflow against the tool catalog and return errors."""
+    return validate_workflow(ctx.deps.workflow.to_yaml_dict())
+
+
 _OUTPUT_REF = re.compile(r"\$\{(\w+)\.outputs\.\w+\}")
 
 
@@ -108,41 +158,35 @@ async def render_dag(ctx: RunContext[WorkflowState]) -> str:
     return "\n".join(lines)
 
 
+SUPERVISOR_TOOLS = [
+    data_discovery.call_data_discovery,
+    extraction.call_extraction,
+    diagnostics.call_diagnostics,
+    water_cycle.call_water_cycle_synthesis,
+    visualization.call_visualization,
+    render_dag,
+    check_completeness,
+    run_workflow_validation,
+]
+
+
 supervisor: Agent[WorkflowState, Workflow | str] = Agent(
     model,
     deps_type=WorkflowState,
     output_type=[Workflow, str],
-    tools=[
-        data_discovery.call_data_discovery,
-        extraction.call_extraction,
-        diagnostics.call_diagnostics,
-        water_cycle.call_water_cycle_synthesis,
-        visualization.call_visualization,
-        render_dag,
-        check_completeness,
-    ],
-    instructions=load_prompt(
-        "You are the Workflow Planning and Routing supervisor. "
-        "First choose how to respond:\n"
-        "- If the user's message is a greeting, a question, ambiguous, or missing information "
-        "required to compose steps (e.g. variable, model case, years, data location), reply in "
-        "plain text: briefly ask a focused clarifying question. Do NOT fabricate a workflow or "
-        "invent placeholder settings or params.\n"
-        "- Only when the request is a complete, groundable analysis task, compose the workflow "
-        "and return the structured Workflow object (do not describe it in prose).\n"
-        "When composing, decide which subagents are needed based on missing information in the "
-        "user request and current workflow state. Do not call a subagent unless it adds required steps. "
-        "Use this conditional order only when needed: "
-        "data discovery if required external data or metadata is missing; "
-        "extraction if variables, fields, or timeseries must be produced; "
-        "diagnostics or water cycle if derived metrics are requested; "
-        "visualization only if plots are requested. "
-        "If required inputs are already available from settings or prior step outputs, skip data discovery. "
-        "If no new steps are needed, return the workflow unchanged."
-    ),
+    tools=SUPERVISOR_TOOLS,
+    instructions=load_prompt(SUPERVISOR_ROUTING_PROMPT),
 )
 
-async def build_workflow(user_goal: str, settings: Settings) -> Workflow:
+oneshot_supervisor: Agent[WorkflowState, Workflow | str] = Agent(
+    model,
+    deps_type=WorkflowState,
+    output_type=[Workflow],
+    tools=SUPERVISOR_TOOLS,
+    instructions=load_prompt(ONESHOT_SUPERVISOR_PROMPT),
+)
+
+async def build_workflow_one_shot(user_goal: str, settings: Settings) -> Workflow:
     """Generate an ESMFlow workflow from a user goal using the supervisor chain."""
     state = WorkflowState(
         workflow=Workflow(
@@ -155,7 +199,7 @@ async def build_workflow(user_goal: str, settings: Settings) -> Workflow:
 
     # Force a structured Workflow on the programmatic path (evals depend on this).
     # The plain-text conversational path is only enabled for the to_web chat UI.
-    result = await supervisor.run(user_goal, deps=state, output_type=Workflow)
+    result = await oneshot_supervisor.run(user_goal, deps=state, output_type=Workflow)
     return result.output
 
 app = supervisor.to_web(
