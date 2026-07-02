@@ -77,7 +77,7 @@ class Workflow(BaseModel):
     steps: List[Step]
 
     def to_yaml_dict(self) -> Dict[str, Any]:
-        """Return a plain dict matching run_workflow.py YAML expectations."""
+        """Return a plain dict matching workflow YAML expectations."""
         return self.model_dump(exclude_none=True)
 
     def write_to_file(self, path: Union[str, Path]) -> None:
