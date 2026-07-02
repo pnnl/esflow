@@ -13,6 +13,7 @@ from workflow import Settings, Workflow
 from agents import water_cycle
 from common import WorkflowState
 from common.config import MODELS, model, load_prompt
+from common.workflow_validation import validate_workflow
 
 
 SUPERVISOR_ROUTING_PROMPT = (
@@ -32,6 +33,9 @@ SUPERVISOR_ROUTING_PROMPT = (
     "diagnostics or water cycle if derived metrics are requested; "
     "visualization only if plots are requested. "
     "If required inputs are already available from settings or prior step outputs, skip data discovery. "
+    "Before returning any structured Workflow, call check_completeness and run_workflow_validation. "
+    "If either tool returns issues, ask the user for the missing information or corrections in plain text "
+    "instead of returning an invalid workflow. "
     "If no new steps are needed, return the workflow unchanged."
 )
 
@@ -51,6 +55,8 @@ ONESHOT_SUPERVISOR_PROMPT = (
     "visualization only when plots are explicitly requested. "
     "Preserve validity: unique step IDs, known tool names only, and valid output references. "
     "If required inputs already exist from settings or prior outputs, do not regenerate them. "
+    "Before returning, call check_completeness and run_workflow_validation. "
+    "Only return a Workflow when both tools report no issues. "
     "If no new steps are needed, return the workflow unchanged."
 )
 
@@ -99,6 +105,11 @@ async def check_completeness(ctx: RunContext[WorkflowState]) -> list[str]:
                     if not ref.startswith("settings.") and ref not in known_outputs:
                         gaps.append(f"{step.id}.{key} references unknown output '{val}'")
     return gaps
+
+
+async def run_workflow_validation(ctx: RunContext[WorkflowState]) -> list[str]:
+    """Validate the current workflow against the tool catalog and return errors."""
+    return validate_workflow(ctx.deps.workflow.to_yaml_dict())
 
 
 _OUTPUT_REF = re.compile(r"\$\{(\w+)\.outputs\.\w+\}")
@@ -155,6 +166,7 @@ SUPERVISOR_TOOLS = [
     visualization.call_visualization,
     render_dag,
     check_completeness,
+    run_workflow_validation,
 ]
 
 
