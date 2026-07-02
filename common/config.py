@@ -2,8 +2,13 @@
 
 from pathlib import Path
 
+from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.google import GoogleProvider
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _HERE = Path(__file__).resolve().parent
@@ -29,26 +34,48 @@ class RuntimeConfig(BaseSettings):
 
 runtime_config = RuntimeConfig()
 
-_provider = OpenAIProvider(
+_openai_provider = OpenAIProvider(
+    api_key=runtime_config.AI_INCUBATOR_KEY,
+    base_url=INCUBATOR_BASE_URL,
+)
+
+_anthropic_provider = AnthropicProvider(
+    api_key=runtime_config.AI_INCUBATOR_KEY,
+    base_url=INCUBATOR_BASE_URL,
+)
+
+_google_provider = GoogleProvider(
     api_key=runtime_config.AI_INCUBATOR_KEY,
     base_url=INCUBATOR_BASE_URL,
 )
 
 
-def incubator_model(model_id: str) -> OpenAIChatModel:
+def incubator_openai_model(model_id: str) -> OpenAIChatModel:
     """Build an OpenAIChatModel for a PNNL Depot model ID via the shared provider."""
-    return OpenAIChatModel(model_id, provider=_provider)
+    return OpenAIChatModel(model_id, provider=_openai_provider)
+
+
+def incubator_anthropic_model(model_id: str) -> AnthropicModel:
+    """Build an AnthropicModel for a PNNL Depot model ID via the shared provider."""
+    return AnthropicModel(model_id, provider=_anthropic_provider)
+
+
+def incubator_google_model(model_id: str) -> GoogleModel:
+    """Build a GoogleModel for a PNNL Depot model ID via the shared provider."""
+    return GoogleModel(model_id, provider=_google_provider)
 
 
 # Display label -> Depot model ID. Drives the chat-window model dropdown (see app.py).
-MODELS: dict[str, OpenAIChatModel] = {
-    "Claude Sonnet 4.6": incubator_model("claude-sonnet-4-6-project"),
-    "Claude Opus 4.8": incubator_model("claude-opus-4-8-project"),
-    "Claude Haiku 4.5": incubator_model("claude-haiku-4-5-20251001-v1-project"),
-    "GPT-5.5": incubator_model("gpt-5.5-project"),
-    "GPT-5.1": incubator_model("gpt-5.1-project"),
-    "o4-mini": incubator_model("o4-mini-project"),
-    "Gemma 4 26B": incubator_model("gemma-4-26b-a4b-project"),
+MODELS: dict[str, Model] = {
+    "Claude Sonnet 4.6": incubator_anthropic_model("claude-sonnet-4-6-project"),
+    "Claude Opus 4.8": incubator_anthropic_model("claude-opus-4-8-project"),
+    "Claude Haiku 4.5": incubator_anthropic_model("claude-haiku-4-5-20251001-v1-project"),
+    "GPT 5.5": incubator_openai_model("gpt-5.5-project"),
+    "GPT 5.4 Nano": incubator_openai_model("gpt-5.4-nano-project"),
+    "GPT 5.1": incubator_openai_model("gpt-5.1-project"),
+    "GPT o4 Mini": incubator_openai_model("o4-mini-project"),
+    "Gemma 4 26B": incubator_google_model("gemma-4-26b-a4b-project"),
+    "Gemini 3.5 Flash": incubator_google_model("gemini-3.5-flash-project"),
 }
 
 # Default model used by the supervisor and every subagent.
