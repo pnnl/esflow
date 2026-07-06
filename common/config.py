@@ -78,7 +78,7 @@ MODELS: dict[str, Model] = {
     "Gemini 3.5 Flash": incubator_google_model("gemini-3.5-flash-project"),
 }
 
-# Default model used by the supervisor and every subagent.
+# Default model used by the planner and every subagent.
 model = MODELS["Claude Sonnet 4.6"]
 
 

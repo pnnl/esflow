@@ -7,17 +7,17 @@ from pathlib import Path
 from pydantic_ai import Agent, RunContext
 from starlette.staticfiles import StaticFiles
 
-from agents import data_discovery, diagnostics, extraction, visualization
+from agents.planner import data_discovery, diagnostics, extraction, visualization
 from common.workflow import Settings, Workflow
 
-from agents import water_cycle
+from agents.planner import water_cycle
 from common import WorkflowState
 from common.config import MODELS, model, load_prompt
 from common.workflow_validation import validate_workflow
 
 
-SUPERVISOR_ROUTING_PROMPT = (
-    "You are the Workflow Planning and Routing supervisor. "
+PLANNER_ROUTING_PROMPT = (
+    "You are the Workflow planner. "
     "First choose how to respond:\n"
     "- If the user's message is a greeting, a question, ambiguous, or missing information "
     "required to compose steps (e.g. variable, model case, years, data location), reply in "
@@ -41,8 +41,8 @@ SUPERVISOR_ROUTING_PROMPT = (
     "If no new steps are needed, return the workflow unchanged."
 )
 
-ONESHOT_SUPERVISOR_PROMPT = (
-    "You are the one-shot Workflow Planning and Routing supervisor. "
+ONESHOT_PLANNER_PROMPT = (
+    "You are the one-shot Workflow planner. "
     "Produce the best complete Workflow in a single pass with no follow-up turn. "
     "Return only the structured Workflow object, never prose. "
     "Never ask clarifying questions and never return plain text. "
@@ -160,7 +160,7 @@ async def render_dag(ctx: RunContext[WorkflowState]) -> str:
     return "\n".join(lines)
 
 
-SUPERVISOR_TOOLS = [
+PLANNER_TOOLS = [
     data_discovery.call_data_discovery,
     extraction.call_extraction,
     diagnostics.call_diagnostics,
@@ -172,27 +172,27 @@ SUPERVISOR_TOOLS = [
 ]
 
 
-supervisor: Agent[WorkflowState, Workflow | str] = Agent(
+planner: Agent[WorkflowState, Workflow | str] = Agent(
     model,
     deps_type=WorkflowState,
     output_type=[Workflow, str],
-    tools=SUPERVISOR_TOOLS,
-    instructions=load_prompt(SUPERVISOR_ROUTING_PROMPT),
+    tools=PLANNER_TOOLS,
+    instructions=load_prompt(PLANNER_ROUTING_PROMPT),
 )
 
-oneshot_supervisor: Agent[WorkflowState, Workflow | str] = Agent(
+oneshot_planner: Agent[WorkflowState, Workflow | str] = Agent(
     model,
     deps_type=WorkflowState,
     output_type=[Workflow],
-    tools=SUPERVISOR_TOOLS,
-    instructions=load_prompt(ONESHOT_SUPERVISOR_PROMPT),
+    tools=PLANNER_TOOLS,
+    instructions=load_prompt(ONESHOT_PLANNER_PROMPT),
 )
 
-async def build_workflow_one_shot(user_goal: str, settings: Settings) -> Workflow:
-    """Generate an ESMFlow workflow from a user goal using the supervisor chain."""
+async def plan_workflow_one_shot(user_goal: str, settings: Settings) -> Workflow:
+    """Plan an ESMFlow workflow from a user goal using the planner chain."""
     state = WorkflowState(
         workflow=Workflow(
-            name="Generated Workflow",
+            name="Planned Workflow",
             description=user_goal,
             settings=settings,
             steps=[],
@@ -201,10 +201,10 @@ async def build_workflow_one_shot(user_goal: str, settings: Settings) -> Workflo
 
     # Force a structured Workflow on the programmatic path (evals depend on this).
     # The plain-text conversational path is only enabled for the to_web chat UI.
-    result = await oneshot_supervisor.run(user_goal, deps=state, output_type=Workflow)
+    result = await oneshot_planner.run(user_goal, deps=state, output_type=Workflow)
     return result.output
 
-app = supervisor.to_web(
+app = planner.to_web(
     deps=_bootstrap_workflow_state(),
     models=MODELS,
     html_source=Path(__file__).parent / "web_ui.html",

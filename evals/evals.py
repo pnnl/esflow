@@ -10,7 +10,7 @@ from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorCont
 from pydantic_ai.exceptions import ModelAPIError
 
 from common.workflow import Workflow
-from app import build_workflow_one_shot, default_settings
+from app import plan_workflow_one_shot, default_settings
 from common.workflow_validation import validate_workflow
 
 
@@ -72,10 +72,10 @@ dataset = Dataset(
 )
 
 # Define the function to evaluate
-def generate_workflow(task_file: str) -> Workflow:
+def plan_workflow(task_file: str) -> Workflow:
     with open(task_file, 'r') as f:
         task_description = f.read()
-    return asyncio.run(build_workflow_one_shot(task_description, default_settings()))
+    return asyncio.run(plan_workflow_one_shot(task_description, default_settings()))
 
 task_retry_config = {
     'stop': stop_after_attempt(3),  # Stop after 3 attempts
@@ -85,6 +85,6 @@ task_retry_config = {
 }
 
 # Run the evaluation
-report = dataset.evaluate_sync(generate_workflow, retry_task=task_retry_config, max_concurrency=2)
+report = dataset.evaluate_sync(plan_workflow, retry_task=task_retry_config, max_concurrency=2)
 # Print the results
 report.print(include_reasons=True)
