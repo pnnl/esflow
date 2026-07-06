@@ -58,7 +58,7 @@ Mapped tools:
 Purpose: Plan end-to-end ESM diagnostic workflows by chaining the above subagents based on user intent and requested artifacts.
 
 Mapped tools:
-- All tools in tool_catalog_generated.yaml (through delegated subagents)
+- All tools in tools/tool_catalog.yaml (through delegated subagents)
 
 ## Planner Routing Hints (Domain-Specific)
 - If intent mentions streamflow skill, NSE/KGE/PBIAS, or FDCs:
