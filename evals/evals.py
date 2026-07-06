@@ -9,7 +9,7 @@ from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 from pydantic_ai.exceptions import ModelAPIError
 
-from workflow import Workflow
+from common.workflow import Workflow
 from app import build_workflow_one_shot, default_settings
 from common.workflow_validation import validate_workflow
 

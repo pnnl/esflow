@@ -4,7 +4,7 @@ from typing import List
 
 from pydantic_ai import Agent, RunContext
 
-from workflow import BasinScaleWaterCycleSynthesisStep
+from common.workflow import BasinScaleWaterCycleSynthesisStep
 
 from common import WorkflowState, _with_context
 from common.config import model, load_prompt

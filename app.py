@@ -8,7 +8,7 @@ from pydantic_ai import Agent, RunContext
 from starlette.staticfiles import StaticFiles
 
 from agents import data_discovery, diagnostics, extraction, visualization
-from workflow import Settings, Workflow
+from common.workflow import Settings, Workflow
 
 from agents import water_cycle
 from common import WorkflowState
