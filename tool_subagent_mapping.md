@@ -60,7 +60,7 @@ Purpose: Plan end-to-end ESM diagnostic workflows by chaining the above subagent
 Mapped tools:
 - All tools in tool_catalog_generated.yaml (through delegated subagents)
 
-## Supervisor Routing Hints (Domain-Specific)
+## Planner Routing Hints (Domain-Specific)
 - If intent mentions streamflow skill, NSE/KGE/PBIAS, or FDCs:
   Route first to ESM Spatial-Temporal Extraction, then ESM Diagnostics and Skill Metrics, then ESM Diagnostic Visualization.
 - If intent mentions ET/runoff/precipitation closure or water balance:

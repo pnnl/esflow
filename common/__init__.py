@@ -1,4 +1,4 @@
-"""Shared state and utilities for supervisor and subagents."""
+"""Shared state and utilities for planner and subagents."""
 
 from dataclasses import dataclass
 
@@ -7,7 +7,7 @@ from common.workflow import Workflow
 
 @dataclass
 class WorkflowState:
-    """Shared mutable workflow state used by the supervisor and subagents."""
+    """Shared mutable workflow state used by the planner and subagents."""
 
     workflow: Workflow
 
