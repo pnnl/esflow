@@ -9,8 +9,9 @@ from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 from pydantic_ai.exceptions import ModelAPIError
 
+from agents.planner.settings import default_settings
 from common.workflow import Workflow
-from app import plan_workflow_one_shot, default_settings
+from agents.planner.oneshot_planner import plan_workflow_one_shot
 from common.workflow_validation import validate_workflow
 
 
