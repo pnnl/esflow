@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from workflow import Workflow
+from common.workflow import Workflow
 
 
 @dataclass

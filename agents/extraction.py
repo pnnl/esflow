@@ -4,7 +4,7 @@ from typing import List
 
 from pydantic_ai import Agent, RunContext
 
-from workflow import SpatialTemporalExtractionStep
+from common.workflow import SpatialTemporalExtractionStep
 
 from common import WorkflowState, _with_context
 from common.config import model, load_prompt
