@@ -34,7 +34,9 @@ SUPERVISOR_ROUTING_PROMPT = (
     "visualization only if plots are requested. "
     "If required inputs are already available from settings or prior step outputs, skip data discovery. "
     "Before returning any structured Workflow, call check_completeness and run_workflow_validation. "
-    "If either tool returns issues, ask the user for the missing information or corrections in plain text "
+    "If check_completeness returns gaps, ask the user to supply those values instead of guessing or "
+    "emitting null/placeholder params. If either tool returns issues, ask the user for the missing "
+    "information or corrections in plain text "
     "instead of returning an invalid workflow. "
     "If no new steps are needed, return the workflow unchanged."
 )
@@ -210,10 +212,7 @@ app = supervisor.to_web(
         "You are chatting interactively. Greet the user briefly and explain you compose "
         "ESM analysis workflows from a validated tool library. "
         "After each change to the workflow, call render_dag and include its Mermaid diagram "
-        "in your reply so the user can see the current plan. "
-        "Before finalizing, call check_completeness; if it returns any gaps, ask the user to "
-        "supply those values instead of guessing or emitting null/placeholder params. "
-        "Only return the final structured Workflow once check_completeness reports no gaps."
+        "in your reply so the user can see the current plan."
     ),
 )
 
