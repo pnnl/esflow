@@ -1,87 +1,53 @@
-#!/usr/bin/env python3
 """
-Reproducible structural grading of benchmark runs (3-step design).
+Reproducible structural grading of benchmark runs (3-step design),
+exposed as pydantic-evals ``Evaluator`` subclasses.
 
-The taxonomy used in the paper has four grades — crash, success, silent
-failure, obvious failure — but only two of them can be assigned by a fully
-deterministic rule. Silent vs. obvious failure is a perceptual judgment
-about whether a wrong result would be caught by a domain scientist on
-inspection, which depends on the figure content and is not reliably
-expressible as code. We therefore split grading into three steps:
+Grade taxonomy
+--------------
+The paper uses four grades:  crash, success, silent failure, obvious failure.
+Two can be assigned deterministically; the rest need human review.
 
   Step 1 — Crash detection (both modes)
-      A run is CRASH iff its required final deliverable is missing.
-      The deliverable is the user-facing artifact named in the prompt:
+      CRASH iff the required final deliverable is missing:
         T1               -> a summary-statistics CSV
-        T2 ... T7        -> at least one final figure (PNG)
-      Intermediate files are not checked. The script never executed far
-      enough to produce anything the user could use.
+        T2 .. T7         -> at least one PNG figure
 
   Step 2 — Success detection (protocol mode only)
-      A protocol run is SUCCESS iff it passed Step 1 and its key data
-      file is numerically identical to the reference within float64
-      precision (rtol=1e-12, atol=1e-15). This is cprnc-style
-      verification, slackened by ~1e-12 to absorb float64 reassociation
-      noise from differently-ordered reductions in LLM-generated
-      workflows. Protocol runs go through the validated tool library,
-      so the key output filename is predictable and the comparison is
-      well-defined. We do NOT auto-detect success in baseline runs
-      because filenames vary too much across free-form Python scripts
-      and the file the figure was drawn from is not always preserved.
+      SUCCESS iff the key data file is numerically identical to the
+      reference within float64 precision (rtol=1e-12, atol=1e-15).
+      Baseline runs are not auto-graded here because output filenames
+      are not predictable across free-form scripts.
 
   Step 3 — Manual review (everything else)
-      All non-crash baseline runs, plus protocol runs that are not
-      successes, are written out as UNDETERMINED. A human looks at
-      each one and assigns silent failure or obvious failure (or, for
-      undetermined baseline runs, success). The manual labels live in
-      manual_overrides.json and are merged at plot time.
+      UNDETERMINED runs are flagged for human inspection.
 
-The reference run is claude-opus-4-6 / run2 of the protocol condition,
-hand-inspected and approved as ground truth. Baseline runs are compared
-against the same reference for any later numerical-comparison work.
+Evaluators
+----------
+``HasDeliverable``
+    Wraps Step 1.  Returns True/False.
 
-Outputs:
-  scores_structural.json   one entry per run with auto_grade and reason
-  printed summary tables   crash / success / undetermined counts
-  printed undetermined list runs that need human review
+``MatchesReference``
+    Wraps Step 2.  Returns True/False.  Protocol runs only.
 
-Usage:
-    python structural_grading.py
+``StructuralGrade``
+    Combines both steps and returns a numeric score:
+      crash        -> 0.0
+      success      -> 1.0
+      undetermined -> 0.5
+
+Both evaluators expect ``ctx.output`` to be a ``pathlib.Path`` pointing to
+the run's output directory (``…/<model>_<mode>/<task>/run<n>_output``).
+
 """
 
 import csv
-import json
-from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import xarray as xr
-
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
-SCORES_OUT = RESULTS_DIR / "scores_structural.json"
-
-MODELS = [
-    "claude-opus-4-6",
-    "gpt-5",
-    "gemini-2.5-flash",
-    "o4-mini",
-    "claude-haiku-4-5-20251001",
-    "phi-4",
-]
-TASKS = [
-    "task_01_obs_summary",
-    "task_02_seasonal_runoff",
-    "task_03_et_benchmark",
-    "task_04_streamflow_fdc",
-    "task_05_basin_streamflow",
-    "task_06_water_balance",
-    "task_07_integrated_diagnostic",
-]
-RUNS = [1, 2, 3, 4]
-
-# Reference run for "success" comparison
-REF_MODEL = "claude-opus-4-6"
-REF_RUN = 2
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 # Numerical tolerance for the success check.
 # Set to float64 precision following cprnc-style verification, but allowing
@@ -303,114 +269,87 @@ def protocol_matches_reference(out_dir: Path, task: str,
 
 
 # ---------------------------------------------------------------------------
-# Per-run grading
+# Grade scores used by Evaluator subclasses
 # ---------------------------------------------------------------------------
-def grade_run(mode: str, model: str, task: str, run: int,
-              ref_csv: Path | None, ref_nc: Path | None):
-    """Apply Steps 1 and 2.
+GRADE_CRASH = 0.0
+GRADE_UNDETERMINED = 0.5
+GRADE_SUCCESS = 1.0
 
-    Returns (auto_grade, reason).
-    auto_grade ∈ {"crash", "success", "undetermined"}.
+
+# ---------------------------------------------------------------------------
+# pydantic-evals Evaluator subclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HasDeliverable(Evaluator[str, Path]):
+    """Step 1: CRASH detection.
+
+    Returns ``True`` when the final deliverable (CSV for T1, PNG for T2-T7)
+    is present in ``ctx.output`` (a ``Path`` to the run output directory).
+    Returns ``False`` (crash) otherwise.
     """
-    out_dir = RESULTS_DIR / f"{model}_{mode}" / task / f"run{run}_output"
+    task: str
 
-    # Step 1 — final deliverable check (both modes)
-    ok, reason = has_deliverable(out_dir, task)
-    if not ok:
-        return "crash", reason
-
-    # Step 2 — protocol-only numerical match against reference
-    if mode == "protocol":
-        match, why = protocol_matches_reference(
-            out_dir, task, ref_csv, ref_nc)
-        if match:
-            return "success", why
-        return "undetermined", f"protocol non-match: {why}"
-
-    # Baseline non-crash runs are always undetermined
-    return "undetermined", "baseline non-crash, awaiting manual review"
+    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
+        ok, reason = has_deliverable(ctx.output, self.task)
+        return EvaluationReason(value=ok, reason=reason)
 
 
-# ---------------------------------------------------------------------------
-# Main driver
-# ---------------------------------------------------------------------------
-def main():
-    # Resolve reference files per task
-    ref_files = {}
-    print("Reference files (claude-opus-4-6 protocol run2):")
-    for task in TASKS:
-        ref_dir = RESULTS_DIR / f"{REF_MODEL}_protocol" / task / f"run{REF_RUN}_output"
-        ref_files[task] = {
-            "csv": find_key_csv(ref_dir, task),
-            "nc":  find_key_nc(ref_dir, task),
-        }
-        c = ref_files[task]["csv"]
-        n = ref_files[task]["nc"]
-        print(f"  {task:32s}  csv={c.name if c else 'NONE':40s}  "
-              f"nc={n.name if n else '-'}")
-    print()
+@dataclass
+class MatchesReference(Evaluator[str, Path]):
+    """Step 2: numerical SUCCESS detection for protocol runs.
 
-    regraded = []
-    for mode in ("protocol", "baseline"):
-        for model in MODELS:
-            for task in TASKS:
-                for run in RUNS:
-                    grade, reason = grade_run(
-                        mode, model, task, run,
-                        ref_files[task]["csv"], ref_files[task]["nc"],
-                    )
-                    regraded.append({
-                        "mode": mode,
-                        "model": model,
-                        "task": task,
-                        "run": run,
-                        "auto_grade": grade,
-                        "reason": reason,
-                    })
+    Compares ``ctx.output`` against the reference CSV/NC within
+    ``rtol=1e-12, atol=1e-15``.  Returns ``True`` on match, ``False``
+    otherwise.  Should only be added to protocol-mode cases.
+    """
+    task: str
+    ref_csv: Path | None = None
+    ref_nc: Path | None = None
 
-    SCORES_OUT.parent.mkdir(parents=True, exist_ok=True)
-    with open(SCORES_OUT, "w") as f:
-        json.dump(regraded, f, indent=2)
-
-    # ---- summaries ----
-    print("=" * 90)
-    print(f"AUTO-GRADING (Steps 1 + 2)")
-    print(f"  Step 1: crash iff final deliverable missing (both modes)")
-    print(f"  Step 2: success iff protocol numerical match (rtol={RTOL})")
-    print("=" * 90)
-
-    print("\nGrade distribution by mode:")
-    for mode in ("protocol", "baseline"):
-        c = Counter(r["auto_grade"] for r in regraded if r["mode"] == mode)
-        total = sum(c.values())
-        print(f"  {mode:10s}  crash={c.get('crash', 0):3d}  "
-              f"success={c.get('success', 0):3d}  "
-              f"undetermined={c.get('undetermined', 0):3d}  (n={total})")
-
-    print("\nPer-task breakdown:")
-    for mode in ("protocol", "baseline"):
-        print(f"  {mode}:")
-        for task in TASKS:
-            c = Counter(r["auto_grade"] for r in regraded
-                        if r["mode"] == mode and r["task"] == task)
-            print(f"    {task:32s}  crash={c.get('crash', 0):2d}  "
-                  f"success={c.get('success', 0):2d}  "
-                  f"undetermined={c.get('undetermined', 0):2d}")
-
-    print("\nPer-model breakdown:")
-    for mode in ("protocol", "baseline"):
-        print(f"  {mode}:")
-        for model in MODELS:
-            c = Counter(r["auto_grade"] for r in regraded
-                        if r["mode"] == mode and r["model"] == model)
-            print(f"    {model:32s}  crash={c.get('crash', 0):2d}  "
-                  f"success={c.get('success', 0):2d}  "
-                  f"undetermined={c.get('undetermined', 0):2d}")
-
-    n_undet = sum(1 for r in regraded if r["auto_grade"] == "undetermined")
-    print(f"\nUndetermined runs awaiting manual review: {n_undet}")
-    print(f"Wrote {SCORES_OUT}")
+    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
+        ok, reason = protocol_matches_reference(
+            ctx.output, self.task, self.ref_csv, self.ref_nc
+        )
+        return EvaluationReason(value=ok, reason=reason)
 
 
-if __name__ == "__main__":
-    main()
+@dataclass
+class StructuralGrade(Evaluator[str, Path]):
+    """Combined Steps 1 + 2 returning a numeric score.
+
+    Scores:
+      crash        -> 0.0
+      success      -> 1.0
+      undetermined -> 0.5  (needs manual review)
+
+    ``ref_csv`` / ``ref_nc`` are required for protocol-mode success
+    detection; leave as ``None`` for baseline-mode cases.
+    """
+    task: str
+    mode: Literal["protocol", "baseline"]
+    ref_csv: Path | None = None
+    ref_nc: Path | None = None
+
+    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
+        # Step 1 — deliverable check
+        ok, reason = has_deliverable(ctx.output, self.task)
+        if not ok:
+            return EvaluationReason(value=GRADE_CRASH,
+                                    reason=f"crash: {reason}")
+
+        # Step 2 — protocol-only numerical match
+        if self.mode == "protocol":
+            match, why = protocol_matches_reference(
+                ctx.output, self.task, self.ref_csv, self.ref_nc
+            )
+            if match:
+                return EvaluationReason(value=GRADE_SUCCESS,
+                                        reason=f"success: {why}")
+            return EvaluationReason(value=GRADE_UNDETERMINED,
+                                    reason=f"undetermined: {why}")
+
+        return EvaluationReason(
+            value=GRADE_UNDETERMINED,
+            reason="undetermined: baseline non-crash, awaiting manual review",
+        )
