@@ -1,1 +1,0 @@
-Run a per-basin integrated water cycle evaluation for E3SM over 1985-1989 across six major river basins. Compare model P, ET, and Q against observations (GPCC, MODIS, LORA), compute streamflow FDC metrics, and produce model-vs-obs bar charts and radar diagnostic charts.

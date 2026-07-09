@@ -1,1 +1,0 @@
-Compute the global water balance (P - ET - Q) from E3SM for 1985-1989. Produce a global map of the residual, then clip P, ET, Q, and residual to six major river basins and show per-basin bar charts.

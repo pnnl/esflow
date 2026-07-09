@@ -1,1 +1,0 @@
-Extract the mean runoff field from an E3SM simulation for 1985-1989, compute zonal statistics by latitude band, and produce a global map with the statistics overlaid.
