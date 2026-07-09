@@ -1,0 +1,246 @@
+import xarray as xr
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import os
+import requests
+import shutil
+from scipy.stats import pearsonr
+
+# --- Configuration ---
+# Output directory
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gemini-2.5-flash_baseline/task_03_et_benchmark/run4_output"
+
+# E3SM data paths
+e3sm_data_root = "./data/sample/e3sm/"
+e3sm_case_name = "sample.v3.LR.historical"
+e3sm_component_dir = "lnd" # Directory name for ELM
+e3sm_component_filename_id = "elm" # Identifier in the filename for ELM
+e3sm_stream = "h0"
+e3sm_years = range(1985, 1990) # 1985-1989 inclusive
+
+# ILAMB data
+ilamb_base_url = "https://www.ilamb.org/ILAMB-Data/DATA/"
+modis_et_variable = "evspsbl"
+modis_et_dataset = "MODIS"
+modis_et_filename = "et_0.5x0.5.nc"
+modis_et_ilamb_url = f"{ilamb_base_url}{modis_et_variable}/{modis_et_dataset}/{modis_et_filename}"
+modis_et_local_path = os.path.join(output_dir, modis_et_filename)
+
+# --- Create output directory ---
+try:
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory created: {output_dir}")
+except Exception as e:
+    print(f"Error creating output directory {output_dir}: {e}")
+    # Exit if output directory cannot be created, as subsequent steps will fail
+    exit(1)
+
+# --- Helper function for longitude conversion ---
+def ensure_0_360_lon(da_or_ds):
+    """Ensures longitude coordinates are in the 0-360 range."""
+    if 'lon' in da_or_ds.coords and da_or_ds['lon'].min() < 0:
+        print(f"Converting longitude from -180-180 to 0-360 for {da_or_ds.name if hasattr(da_or_ds, 'name') else 'dataset/dataarray'}.")
+        da_or_ds.coords['lon'] = (da_or_ds.coords['lon'] + 360) % 360
+        da_or_ds = da_or_ds.sortby('lon')
+    return da_or_ds
+
+# --- 1. Fetch MODIS ET Data ---
+print(f"Attempting to download MODIS ET from: {modis_et_ilamb_url}")
+try:
+    with requests.get(modis_et_ilamb_url, stream=True, timeout=30) as r: # Added timeout
+        r.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        with open(modis_et_local_path, 'wb') as f:
+            shutil.copyfileobj(r.raw, f)
+    print(f"MODIS ET downloaded to: {modis_et_local_path}")
+except requests.exceptions.RequestException as e:
+    print(f"Error downloading MODIS ET from ILAMB: {e}")
+    print("Please ensure you have an internet connection and the URL is correct.")
+    exit(1)
+except Exception as e:
+    print(f"An unexpected error occurred during MODIS ET download: {e}")
+    exit(1)
+
+# --- 2. Load E3SM ELM Data ---
+# Corrected file pattern to match the example: sample.v3.LR.historical.elm.h0.YYYY-MM.nc
+e3sm_file_pattern = os.path.join(
+    e3sm_data_root,
+    e3sm_component_dir, # Use 'lnd' for the directory
+    f"{e3sm_case_name}.{e3sm_component_filename_id}.{e3sm_stream}.{{year}}-{{month:02d}}.nc" # Use 'elm' for the filename part
+)
+
+e3sm_files = []
+for year in e3sm_years:
+    for month in range(1, 13):
+        e3sm_files.append(e3sm_file_pattern.format(year=year, month=month))
+
+# Filter for existing files (important for sample data which might not have all months/years)
+existing_e3sm_files = [f for f in e3sm_files if os.path.exists(f)]
+if not existing_e3sm_files:
+    print(f"No E3SM ELM files found for {e3sm_years} in {os.path.join(e3sm_data_root, e3sm_component_dir)}. Please check data path and filename pattern.")
+    exit(1)
+
+print(f"Found {len(existing_e3sm_files)} E3SM ELM files.")
+
+try:
+    ds_elm = xr.open_mfdataset(
+        existing_e3sm_files,
+        combine='by_coords',
+        data_vars=['QVEGE', 'QVEGT', 'QSOIL'],
+        coords='minimal',
+        compat='override',
+        parallel=True # Use dask for parallel loading
+    )
+    print("E3SM ELM data loaded successfully.")
+except Exception as e:
+    print(f"Error loading E3SM ELM data: {e}")
+    exit(1)
+
+# --- 3. Calculate E3SM Climatological ET ---
+try:
+    # ELM ET variables are typically in kg/m2/s, which is equivalent to mm/s for water.
+    # Convert to mm/day: 1 mm/s * 60 s/min * 60 min/hr * 24 hr/day = 86400 mm/day
+    elm_et_total = (ds_elm['QVEGE'] + ds_elm['QVEGT'] + ds_elm['QSOIL']) * 86400
+    elm_et_climo = elm_et_total.mean(dim='time')
+    elm_et_climo.name = 'E3SM_ET_mm_day'
+    elm_et_climo = ensure_0_360_lon(elm_et_climo) # Ensure E3SM longitude is 0-360
+    print("E3SM ELM climatological ET calculated and longitude standardized.")
+except KeyError as e:
+    print(f"Missing expected E3SM variable: {e}. Check ELM output variables.")
+    exit(1)
+except Exception as e:
+    print(f"Error calculating E3SM climatological ET: {e}")
+    exit(1)
+
+# --- 4. Load and Process MODIS ET Data ---
+try:
+    ds_modis = xr.open_dataset(modis_et_local_path)
+    # MODIS 'et' variable is typically in kg m-2 s-1, which is equivalent to mm/s for water.
+    # Convert to mm/day
+    modis_et_climo = ds_modis['et'] * 86400
+    modis_et_climo.name = 'MODIS_ET_mm_day'
+
+    # Check if MODIS data has a time dimension and average if necessary
+    if 'time' in modis_et_climo.dims:
+        modis_et_climo = modis_et_climo.mean(dim='time')
+        print("MODIS ET data loaded and time-averaged.")
+    else:
+        print("MODIS ET data loaded (already a climatology).")
+
+    modis_et_climo = ensure_0_360_lon(modis_et_climo) # Ensure MODIS longitude is 0-360
+    print("MODIS ET data processed and longitude standardized.")
+
+except KeyError as e:
+    print(f"Missing expected MODIS variable 'et': {e}. Check MODIS file content.")
+    exit(1)
+except Exception as e:
+    print(f"Error loading or processing MODIS ET data: {e}")
+    exit(1)
+
+# --- 5. Regrid E3SM to MODIS Grid ---
+try:
+    # Ensure dimensions are named consistently (lat, lon)
+    # This is often not strictly necessary if they are already 'lat' and 'lon' but good for robustness
+    elm_et_climo = elm_et_climo.rename({'lat': 'lat', 'lon': 'lon'})
+    modis_et_climo = modis_et_climo.rename({'lat': 'lat', 'lon': 'lon'})
+
+    # Interpolate E3SM data to the MODIS grid
+    elm_et_climo_regridded = elm_et_climo.interp(
+        lat=modis_et_climo['lat'],
+        lon=modis_et_climo['lon'],
+        method='linear',
+        kwargs={"fill_value": np.nan} # Fill NaNs if interpolation goes out of bounds
+    )
+    print("E3SM ELM climatological ET regridded to MODIS grid.")
+except Exception as e:
+    print(f"Error regridding E3SM data: {e}")
+    exit(1)
+
+# --- 6. Compute Bias and Correlation ---
+try:
+    # Align coordinates before computation (important if there are slight differences in bounds)
+    elm_et_aligned, modis_et_aligned = xr.align(
+        elm_et_climo_regridded,
+        modis_et_climo,
+        join='inner',
+        exclude=['time'] # Exclude time if it somehow got introduced or is a scalar
+    )
+
+    # Spatial Bias (Model - Observations)
+    et_bias = elm_et_aligned - modis_et_aligned
+    et_bias.name = 'ET_Bias_mm_day'
+
+    # Global Mean Bias
+    global_mean_bias = et_bias.mean(skipna=True).item()
+
+    # Spatial Correlation
+    # Flatten the arrays, remove NaNs, and compute Pearson correlation
+    model_flat = elm_et_aligned.values.flatten()
+    obs_flat = modis_et_aligned.values.flatten()
+
+    # Filter out NaNs from both arrays simultaneously
+    valid_indices = ~np.isnan(model_flat) & ~np.isnan(obs_flat)
+    model_flat_valid = model_flat[valid_indices]
+    obs_flat_valid = obs_flat[valid_indices]
+
+    if len(model_flat_valid) > 1: # Need at least 2 points for correlation
+        spatial_correlation, _ = pearsonr(model_flat_valid, obs_flat_valid)
+    else:
+        spatial_correlation = np.nan
+        print("Warning: Not enough valid data points to compute spatial correlation.")
+
+    print(f"Global Mean Bias (E3SM - MODIS): {global_mean_bias:.3f} mm/day")
+    print(f"Spatial Correlation (E3SM vs MODIS): {spatial_correlation:.3f}")
+
+    # Save metrics to a text file
+    metrics_file = os.path.join(output_dir, "et_benchmark_metrics.txt")
+    with open(metrics_file, 'w') as f:
+        f.write(f"E3SM ELM vs MODIS ET (1985-1989 Climatology)\n")
+        f.write(f"Global Mean Bias (E3SM - MODIS): {global_mean_bias:.3f} mm/day\n")
+        f.write(f"Spatial Correlation (E3SM vs MODIS): {spatial_correlation:.3f}\n")
+    print(f"Benchmark metrics saved to: {metrics_file}")
+
+except Exception as e:
+    print(f"Error computing bias or correlation: {e}")
+    exit(1)
+
+# --- 7. Plot Bias Map ---
+try:
+    plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180)) # Center map on Pacific
+    
+    # Determine appropriate colorbar range based on data
+    # Use 95th percentile of absolute bias for symmetric colorbar limits
+    vmax = np.nanpercentile(np.abs(et_bias.values), 95) 
+    bias_levels = np.linspace(-vmax, vmax, 21) # 21 levels centered at 0
+
+    et_bias.plot.contourf(
+        ax=ax,
+        transform=ccrs.PlateCarree(),
+        levels=bias_levels,
+        cmap='RdBu',
+        cbar_kwargs={'label': 'ET Bias (E3SM - MODIS) [mm/day]', 'extend': 'both'}
+    )
+    ax.coastlines()
+    ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
+    ax.set_title(f'E3SM ELM vs MODIS ET Bias (1985-1989 Climatology)\nGlobal Mean Bias: {global_mean_bias:.2f} mm/day, Spatial Corr: {spatial_correlation:.2f}')
+    plt.tight_layout()
+
+    plot_file = os.path.join(output_dir, "et_bias_map.png")
+    plt.savefig(plot_file, dpi=300)
+    plt.close()
+    print(f"Bias map saved to: {plot_file}")
+except Exception as e:
+    print(f"Error plotting bias map: {e}")
+
+# --- 8. Save Climatological Data (Optional but good practice) ---
+try:
+    elm_et_climo.to_netcdf(os.path.join(output_dir, "e3sm_elm_et_climo_1985-1989.nc"))
+    modis_et_climo.to_netcdf(os.path.join(output_dir, "modis_et_climo.nc"))
+    et_bias.to_netcdf(os.path.join(output_dir, "et_bias_1985-1989.nc"))
+    print("Climatological ET data and bias field saved as NetCDF.")
+except Exception as e:
+    print(f"Error saving climatological NetCDF files: {e}")
+
+print("Script finished.")

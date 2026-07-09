@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+import os
+import sys
+import glob
+import time
+import socket
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from scipy.stats import pearsonr
+from urllib.request import urlopen
+
+def ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating directory {path}: {e}", file=sys.stderr)
+
+def download_with_timeout(url, filepath, connect_timeout=20, max_seconds=180, chunk_size=1024*1024):
+    """Download a file with a hard wall-clock time limit."""
+    start = time.time()
+    tmpfile = filepath + ".downloading"
+    try:
+        # If file exists, skip
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            print(f"File already exists: {filepath}")
+            return True
+        print(f"Downloading {url} to {filepath}")
+        socket.setdefaulttimeout(connect_timeout)
+        with urlopen(url, timeout=connect_timeout) as resp, open(tmpfile, 'wb') as out:
+            total = 0
+            while True:
+                if (time.time() - start) > max_seconds:
+                    raise TimeoutError(f"Download exceeded {max_seconds}s limit")
+                data = resp.read(chunk_size)
+                if not data:
+                    break
+                out.write(data)
+                total += len(data)
+        os.replace(tmpfile, filepath)
+        return True
+    except Exception as e:
+        try:
+            if os.path.exists(tmpfile):
+                os.remove(tmpfile)
+        except Exception:
+            pass
+        print(f"Error downloading {url}: {e}", file=sys.stderr)
+        return False
+
+def standardize_longitude(da_or_ds, lon_name='lon'):
+    """Convert longitudes to [-180,180) and sort if 1D."""
+    obj = da_or_ds
+    if lon_name not in obj.coords:
+        raise ValueError(f"Longitude coordinate '{lon_name}' not found.")
+    lon = obj[lon_name]
+    if lon.ndim == 1:
+        lon_vals = lon.values.copy()
+        if np.nanmax(lon_vals) > 180:
+            lon_vals = ((lon_vals + 180) % 360) - 180
+        obj = obj.assign_coords({lon_name: lon_vals})
+        try:
+            obj = obj.sortby(lon_name)
+        except Exception:
+            order = np.argsort(obj[lon_name].values)
+            if isinstance(obj, xr.DataArray):
+                obj = obj.isel({lon_name: order})
+            else:
+                obj = obj.isel({lon_name: order})
+    else:
+        vals = lon.values.copy()
+        mask = vals > 180
+        vals[mask] = vals[mask] - 360.0
+        obj = obj.assign_coords({lon_name: (lon.dims, vals)})
+    return obj
+
+def convert_et_units_to_mm_per_day(da):
+    """Convert ET units to mm/day, supporting mm/s, kg m-2 s-1."""
+    units = (da.attrs.get('units') or '').lower().replace(' ', '')
+    out = da
+    if ('s-1' in units) or ('/s' in units):
+        out = da * 86400.0
+    elif ('kgm-2s-1' in units) or ('kg/m2/s' in units) or ('kgm-2/s' in units):
+        out = da * 86400.0
+    else:
+        # Assume already in mm/day
+        out = da
+    out.attrs['units'] = 'mm/day'
+    return out
+
+def weighted_time_mean(da):
+    """Compute time-mean weighted by days in month if 'time' dim exists."""
+    if 'time' not in da.dims:
+        return da
+    try:
+        days = xr.DataArray(da['time'].dt.days_in_month, dims='time')
+        return (da * days).sum(dim='time') / days.sum(dim='time')
+    except Exception:
+        return da.mean(dim='time')
+
+def compute_area_weights(lat_1d, lon_1d):
+    """Return 2D cosine-latitude weights normalized to mean 1 over grid."""
+    lat_vals = lat_1d.values if isinstance(lat_1d, xr.DataArray) else np.asarray(lat_1d)
+    lon_vals = lon_1d.values if isinstance(lon_1d, xr.DataArray) else np.asarray(lon_1d)
+    lat_rad = np.deg2rad(lat_vals)
+    w = np.cos(lat_rad)
+    w2d = w[:, None] * np.ones((len(lat_vals), len(lon_vals)))
+    w2d = w2d / np.nanmean(w2d)
+    return w2d
+
+def open_elm_et_climatology(elm_dir, case_name, years):
+    """Open ELM files (QVEGE, QVEGT, QSOIL), compute ET mm/day and time-mean climatology."""
+    file_list = []
+    for y in years:
+        pattern = os.path.join(elm_dir, f"{case_name}.elm.h0.{y}-*.nc")
+        file_list += sorted(glob.glob(pattern))
+    if len(file_list) == 0:
+        raise FileNotFoundError(f"No ELM files found for pattern {os.path.join(elm_dir, f'{case_name}.elm.h0.{{years}}-*.nc')}")
+    et_list = []
+    lat_da = None
+    lon_da = None
+    for f in file_list:
+        try:
+            ds = xr.open_dataset(f, decode_times=True, use_cftime=True)
+            if not all(v in ds.variables for v in ['QVEGE','QVEGT','QSOIL']):
+                raise KeyError(f"Missing ET components in {f}")
+            et = (ds['QVEGE'] + ds['QVEGT'] + ds['QSOIL']) * 86400.0
+            et = et.assign_attrs(units='mm/day')
+            # Keep coordinates
+            if lat_da is None and 'lat' in ds.coords:
+                lat_da = ds['lat']
+            if lon_da is None and 'lon' in ds.coords:
+                lon_da = ds['lon']
+            et_list.append(et)
+            ds.close()
+        except Exception as e:
+            print(f"Error reading {f}: {e}", file=sys.stderr)
+    if len(et_list) == 0:
+        raise RuntimeError("No valid ET data loaded from ELM files.")
+    et_all = xr.concat(et_list, dim='time')
+    # Restrict to exact years just in case
+    et_all = et_all.sel(time=slice(f"{years[0]}-01-01", f"{years[-1]}-12-31"))
+    et_mean = weighted_time_mean(et_all)
+    et_mean.attrs['description'] = f"ELM ET (QVEGE+QVEGT+QSOIL) climatology {years[0]}-{years[-1]}"
+    return et_mean
+
+def main():
+    case_name = "sample.v3.LR.historical"
+    elm_dir = "./data/sample/e3sm/lnd"
+    years = list(range(1985, 1990))
+    output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_baseline/task_03_et_benchmark/run1_output"
+    ensure_dir(output_dir)
+
+    # Fetch MODIS ET
+    ilamb_var = "evspsbl"
+    ilamb_dataset = "MODIS"
+    ilamb_filename = "et_0.5x0.5.nc"
+    ilamb_url = f"https://www.ilamb.org/ILAMB-Data/DATA/{ilamb_var}/{ilamb_dataset}/{ilamb_filename}"
+    obs_file = os.path.join(output_dir, "MODIS_et_0.5x0.5.nc")
+
+    # Try download with time limit; if fails, search for local copies
+    dl_ok = download_with_timeout(ilamb_url, obs_file, connect_timeout=20, max_seconds=180)
+    if not dl_ok:
+        alt_paths = [
+            "./MODIS_et_0.5x0.5.nc",
+            os.path.join("./data/sample/obs", "MODIS_et_0.5x0.5.nc"),
+            os.path.join("./data/sample/obs/ILAMB/MODIS", "et_0.5x0.5.nc"),
+        ]
+        found = None
+        for p in alt_paths:
+            if os.path.exists(p):
+                found = p
+                break
+        if found is not None:
+            try:
+                # Copy to output for consistency
+                import shutil
+                shutil.copy(found, obs_file)
+                print(f"Using local MODIS ET file: {found}")
+            except Exception as e:
+                print(f"Failed to copy local MODIS file: {e}", file=sys.stderr)
+        else:
+            print("Failed to obtain MODIS ET dataset within time limit and no local copy found. Exiting.", file=sys.stderr)
+            return
+
+    # Load MODIS ET
+    try:
+        ds_obs = xr.open_dataset(obs_file)
+        if 'et' not in ds_obs:
+            raise KeyError("Variable 'et' not found in MODIS dataset.")
+        if 'lon' not in ds_obs.coords or 'lat' not in ds_obs.coords:
+            raise KeyError("MODIS dataset missing 'lat'/'lon' coordinates.")
+        ds_obs = standardize_longitude(ds_obs, lon_name='lon')
+        obs_et = ds_obs['et']
+        obs_et = convert_et_units_to_mm_per_day(obs_et)
+        if 'time' in obs_et.dims:
+            obs_et_mean = weighted_time_mean(obs_et)
+        else:
+            obs_et_mean = obs_et
+        obs_et_mean = obs_et_mean.sortby('lat')
+        obs_lat = obs_et_mean['lat']
+        obs_lon = obs_et_mean['lon']
+    except Exception as e:
+        print(f"Error processing MODIS ET: {e}", file=sys.stderr)
+        return
+
+    # Load ELM ET climatology
+    try:
+        elm_et_mean = open_elm_et_climatology(elm_dir, case_name, years)
+        elm_et_mean = standardize_longitude(elm_et_mean, lon_name='lon')
+        try:
+            elm_et_mean = elm_et_mean.sortby('lat').sortby('lon')
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Error processing ELM ET: {e}", file=sys.stderr)
+        return
+
+    # Regrid ELM mean to MODIS grid using fast nearest-neighbor interpolation
+    try:
+        if 'lat' not in elm_et_mean.dims or 'lon' not in elm_et_mean.dims:
+            raise ValueError("ELM ET mean must have 'lat' and 'lon' dimensions.")
+        elm_on_obs = elm_et_mean.interp(lat=obs_lat, lon=obs_lon, method='nearest')
+        elm_on_obs.attrs['description'] = "ELM ET climatology interpolated to MODIS grid (nearest)"
+    except Exception as e:
+        print(f"Error regridding ELM ET to MODIS grid: {e}", file=sys.stderr)
+        return
+
+    # Compute bias and metrics
+    try:
+        bias = (elm_on_obs - obs_et_mean).astype('float32')
+        bias.name = 'bias'
+        bias.attrs['long_name'] = 'ELM minus MODIS ET'
+        bias.attrs['units'] = 'mm/day'
+        valid = np.isfinite(bias.values) & np.isfinite(obs_et_mean.values) & np.isfinite(elm_on_obs.values)
+        if valid.sum() == 0:
+            print("No overlapping valid grid cells between model and observations.", file=sys.stderr)
+            return
+        weights = compute_area_weights(obs_lat, obs_lon)
+        w_mask = np.where(valid, weights, np.nan)
+        global_mean_bias = float(np.nansum(bias.values * w_mask) / np.nansum(w_mask))
+        x = elm_on_obs.values[valid].ravel()
+        y = obs_et_mean.values[valid].ravel()
+        if x.size >= 2:
+            spatial_corr, pval = pearsonr(x, y)
+        else:
+            spatial_corr, pval = np.nan, np.nan
+    except Exception as e:
+        print(f"Error computing bias and metrics: {e}", file=sys.stderr)
+        return
+
+    # Save outputs
+    try:
+        ds_out = xr.Dataset(
+            {
+                'obs_et_mean': obs_et_mean.astype('float32'),
+                'elm_et_mean_on_obs_grid': elm_on_obs.astype('float32'),
+                'bias': bias
+            }
+        )
+        ds_out['obs_et_mean'].attrs['description'] = 'MODIS ET time-mean'
+        ds_out['elm_et_mean_on_obs_grid'].attrs['description'] = 'ELM ET climatology (1985-1989) interpolated to MODIS grid'
+        ds_out['bias'].attrs['description'] = 'ELM minus MODIS ET (mm/day)'
+        nc_out = os.path.join(output_dir, "et_benchmark_fields.nc")
+        ds_out.to_netcdf(nc_out)
+        print(f"Saved fields to {nc_out}")
+    except Exception as e:
+        print(f"Error saving NetCDF output: {e}", file=sys.stderr)
+
+    try:
+        metrics = pd.DataFrame({
+            'metric': ['global_mean_bias_mm_per_day', 'spatial_correlation', 'pearson_p_value', 'n_valid_points'],
+            'value': [global_mean_bias, spatial_corr, pval, int(valid.sum())]
+        })
+        csv_out = os.path.join(output_dir, "metrics.csv")
+        metrics.to_csv(csv_out, index=False)
+        print(f"Saved metrics to {csv_out}")
+    except Exception as e:
+        print(f"Error saving metrics CSV: {e}", file=sys.stderr)
+
+    # Plot bias map (avoid downloading external cartopy features to keep runtime low)
+    try:
+        fig = plt.figure(figsize=(11,5))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        # No coastlines to avoid external data fetch; simple outline
+        ax.set_global()
+        # Determine symmetric color limits
+        finite_bias = bias.values[np.isfinite(bias.values)]
+        vmax = np.nanpercentile(np.abs(finite_bias), 95) if finite_bias.size > 0 else 1.0
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 1.0
+        im = ax.pcolormesh(obs_lon.values, obs_lat.values, bias.values, cmap='RdBu_r',
+                           vmin=-vmax, vmax=vmax, shading='auto')
+        cb = plt.colorbar(im, orientation='horizontal', pad=0.05, shrink=0.8)
+        cb.set_label('Bias (ELM - MODIS) [mm/day]')
+        title = f"ELM ET Bias vs MODIS (1985-1989 climatology)\nGlobal mean bias={global_mean_bias:.3f} mm/day; Spatial corr={spatial_corr:.3f}"
+        plt.title(title)
+        png_out = os.path.join(output_dir, "bias_map.png")
+        plt.savefig(png_out, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved bias map to {png_out}")
+    except Exception as e:
+        print(f"Error generating bias map: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

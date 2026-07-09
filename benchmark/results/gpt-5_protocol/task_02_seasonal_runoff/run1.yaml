@@ -1,0 +1,43 @@
+name: ELM Runoff 1985-1989 Mean and Global Stats
+description: 'Extract the climatological mean QRUNOFF field from E3SM ELM monthly
+  output over 1985-1989, compute the area-weighted global mean, and plot the mean
+  field with global statistics overlaid.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gpt-5_protocol/task_02_seasonal_runoff/run1_output
+  style: cream_ink
+steps:
+- id: extract_runoff_field
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QRUNOFF
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: qrunoff_mean_1985-1989.nc
+- id: compute_global_mean
+  tool: compute_zonal_stats
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    lat_bands: ''
+  outputs:
+    stats_file: qrunoff_global_stats.csv
+- id: plot_runoff_map
+  tool: plot_gridded_map
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    title: ELM QRUNOFF Mean (1985–1989)
+    units: ''
+    stats_file: ${compute_global_mean.outputs.stats_file}
+  outputs:
+    plot_file: qrunoff_mean_1985-1989_map.png

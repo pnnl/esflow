@@ -1,0 +1,16 @@
+[
+  {
+    "task": "test_out_of_scope",
+    "model": "claude-opus-4-6",
+    "tier": "frontier",
+    "mode": "protocol",
+    "run": 1,
+    "s0": true,
+    "s1": true,
+    "s0_msg": "Valid YAML with steps",
+    "s1_msg": "Dry-run passed",
+    "elapsed": 93.4,
+    "tokens": 12939,
+    "output_file": "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-opus-4-6_protocol/test_out_of_scope/run1.yaml"
+  }
+]

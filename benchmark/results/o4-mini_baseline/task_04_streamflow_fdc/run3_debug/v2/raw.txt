@@ -1,0 +1,238 @@
+import os
+import sys
+import numpy as np
+import pandas as pd
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from scipy.stats import wasserstein_distance
+from datetime import datetime
+import warnings
+
+# Configuration
+case_name = "sample.v3.LR.historical"
+start_date = "1985-01-01"
+end_date = "1989-12-31"
+dates = pd.date_range(start_date, end_date, freq="D")
+e3sm_daily_dir = "./data/sample/e3sm/rof"
+obs_streamflow_dir = "./data/sample/obs/streamflow"
+gauge_meta_path = "./data/sample/obs/gauge_metadata.csv"
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_baseline/task_04_streamflow_fdc/run3_output"
+metrics_csv = os.path.join(output_dir, "streamflow_fdc_metrics.csv")
+fdc_csv = os.path.join(output_dir, "streamflow_fdc_percentiles.csv")
+map_png = os.path.join(output_dir, "streamflow_fdc_wasserstein_map.png")
+fdc_panel_png = os.path.join(output_dir, "streamflow_fdc_panels.png")
+
+# Create output directory
+os.makedirs(output_dir, exist_ok=True)
+
+# Load gauge metadata
+try:
+    gauge_meta = pd.read_csv(gauge_meta_path, dtype={"gauge_id": str})
+    gauge_meta["gauge_id"] = gauge_meta["gauge_id"].astype(str)
+except Exception as e:
+    print(f"Error reading gauge metadata: {e}")
+    sys.exit(1)
+
+# Pick a sample h0 file to get grid coordinates
+sample_h0 = os.path.join(e3sm_daily_dir, f"{case_name}.mosart.h0.1985-01.nc")
+try:
+    ds_h0 = xr.open_dataset(sample_h0)
+    grid_lats = ds_h0["lat"].values
+    grid_lons = ds_h0["lon"].values
+    ds_h0.close()
+except Exception as e:
+    print(f"Error loading sample grid file {sample_h0}: {e}")
+    sys.exit(1)
+
+# Prepare gauge lookup: find nearest grid indices for each gauge
+gauge_coords = {}
+for _, row in gauge_meta.iterrows():
+    gid = row["gauge_id"]
+    glat = row["lat"]
+    glon = row["lon"]
+    ilat = int(np.abs(grid_lats - glat).argmin())
+    ilon = int(np.abs(grid_lons - glon).argmin())
+    gauge_coords[gid] = {
+        "ilat": ilat,
+        "ilon": ilon,
+        "lat": grid_lats[ilat],
+        "lon": grid_lons[ilon]
+    }
+
+# Initialize storage for simulated data
+sim_data = {gid: [] for gid in gauge_meta["gauge_id"]}
+
+# Loop over daily files and extract simulation
+for date in dates:
+    fpath = os.path.join(e3sm_daily_dir, f"{case_name}.mosart.h1.{date.strftime('%Y-%m-%d')}-00000.nc")
+    if not os.path.isfile(fpath):
+        warnings.warn(f"Missing file {fpath}")
+        for gid in sim_data:
+            sim_data[gid].append(np.nan)
+        continue
+    try:
+        ds = xr.open_dataset(fpath)
+        var = ds["RIVER_DISCHARGE_OVER_LAND_LIQ"]
+        for gid in sim_data:
+            coords = gauge_coords.get(gid)
+            if coords is None:
+                sim_data[gid].append(np.nan)
+                continue
+            try:
+                val = var.isel(lat=coords["ilat"], lon=coords["ilon"]).item()
+            except Exception:
+                val = np.nan
+            sim_data[gid].append(val)
+        ds.close()
+    except Exception as e:
+        warnings.warn(f"Error reading {fpath}: {e}")
+        for gid in sim_data:
+            sim_data[gid].append(np.nan)
+
+# Build pandas Series for each gauge
+sim_series = {}
+for gid, vals in sim_data.items():
+    sim_series[gid] = pd.Series(vals, index=dates)
+
+# Load observations and compute metrics
+metrics = []
+fdc_rows = []
+for _, row in gauge_meta.iterrows():
+    gid = row["gauge_id"]
+    obs_file = os.path.join(obs_streamflow_dir, f"{gid}.csv")
+    if not os.path.isfile(obs_file):
+        warnings.warn(f"Missing obs file for gauge {gid}")
+        continue
+    try:
+        obs_df = pd.read_csv(obs_file, parse_dates=["date"])
+        obs_df = obs_df.set_index("date")
+        obs = obs_df["discharge_m3s"].reindex(dates).astype(float)
+    except Exception as e:
+        warnings.warn(f"Error reading obs for {gid}: {e}")
+        continue
+    sim = sim_series.get(gid, pd.Series(index=dates, data=np.nan))
+    df_pair = pd.concat({"sim": sim, "obs": obs}, axis=1)
+    df_pair = df_pair.dropna()
+    if df_pair.empty:
+        warnings.warn(f"No overlapping data for gauge {gid}")
+        continue
+    sim_clean = df_pair["sim"]
+    obs_clean = df_pair["obs"]
+    vol_bias = (sim_clean.sum() - obs_clean.sum()) / obs_clean.sum() * 100.0
+    wdist = wasserstein_distance(sim_clean, obs_clean)
+    q_obs = obs_clean.quantile([0.1, 0.5, 0.9])
+    q_sim = sim_clean.quantile([0.1, 0.5, 0.9])
+    q10r = q_sim.loc[0.1] / q_obs.loc[0.1] if q_obs.loc[0.1] != 0 else np.nan
+    q50r = q_sim.loc[0.5] / q_obs.loc[0.5] if q_obs.loc[0.5] != 0 else np.nan
+    q90r = q_sim.loc[0.9] / q_obs.loc[0.9] if q_obs.loc[0.9] != 0 else np.nan
+    metrics.append({
+        "gauge_id": gid,
+        "lat": row["lat"],
+        "lon": row["lon"],
+        "area_km2": row.get("area_km2", np.nan),
+        "river_name": row.get("river_name", ""),
+        "volume_bias_pct": vol_bias,
+        "wasserstein_distance": wdist,
+        "Q10_ratio": q10r,
+        "Q50_ratio": q50r,
+        "Q90_ratio": q90r
+    })
+    pctls = np.arange(1, 100)
+    for p in pctls:
+        exc = p / 100.0
+        obs_f = obs_clean.quantile(1.0 - exc)
+        sim_f = sim_clean.quantile(1.0 - exc)
+        fdc_rows.append({
+            "gauge_id": gid,
+            "percentile_exceedance": p,
+            "obs_flow": obs_f,
+            "sim_flow": sim_f
+        })
+
+# Save metrics and FDC data
+try:
+    metrics_df = pd.DataFrame(metrics)
+    if "gauge_id" in metrics_df.columns:
+        metrics_df["gauge_id"] = metrics_df["gauge_id"].astype(str)
+    metrics_df.to_csv(metrics_csv, index=False)
+except Exception as e:
+    warnings.warn(f"Error saving metrics CSV: {e}")
+
+try:
+    fdc_df = pd.DataFrame(fdc_rows)
+    if "gauge_id" in fdc_df.columns:
+        fdc_df["gauge_id"] = fdc_df["gauge_id"].astype(str)
+    fdc_df.to_csv(fdc_csv, index=False)
+except Exception as e:
+    warnings.warn(f"Error saving FDC CSV: {e}")
+
+# Plotting for selected gauges
+selected = ["3629000","4121801","4115200","6742900","2969100","1159100"]
+
+# Map of Wasserstein distance
+if "gauge_id" in metrics_df.columns:
+    sel_meta = metrics_df[metrics_df["gauge_id"].isin(selected)]
+    if not sel_meta.empty:
+        try:
+            fig = plt.figure(figsize=(10,6))
+            ax = fig.add_subplot(1,1,1, projection=ccrs.PlateCarree())
+            ax.coastlines()
+            sc = ax.scatter(sel_meta["lon"], sel_meta["lat"],
+                            c=sel_meta["wasserstein_distance"], cmap="viridis", s=80, edgecolor='k', transform=ccrs.PlateCarree())
+            for _, r in sel_meta.iterrows():
+                ax.text(r["lon"]+0.5, r["lat"]+0.5, r["gauge_id"], transform=ccrs.PlateCarree())
+            cbar = plt.colorbar(sc, ax=ax, orientation="vertical", label="Wasserstein Distance (m3/s)")
+            ax.set_title("Wasserstein Distance of E3SM Simulated vs Observed Discharge")
+            plt.savefig(map_png, dpi=300)
+            plt.close(fig)
+        except Exception as e:
+            warnings.warn(f"Error plotting Wasserstein map: {e}")
+    else:
+        warnings.warn("No selected gauges in metrics to plot map.")
+else:
+    warnings.warn("No gauge_id column in metrics; skipping map plotting.")
+
+# FDC comparison panels
+if "gauge_id" in fdc_df.columns:
+    fdc_sel = fdc_df[fdc_df["gauge_id"].isin(selected)]
+    if not fdc_sel.empty and "gauge_id" in metrics_df.columns:
+        sel_meta = metrics_df[metrics_df["gauge_id"].isin(selected)]
+        try:
+            import matplotlib.gridspec as gridspec
+            fig = plt.figure(figsize=(12, 8))
+            gs = gridspec.GridSpec(3, 3, height_ratios=[1,1,1])
+            ax_map = fig.add_subplot(gs[0, :], projection=ccrs.PlateCarree())
+            ax_map.coastlines()
+            sc = ax_map.scatter(sel_meta["lon"], sel_meta["lat"],
+                                c=sel_meta["wasserstein_distance"], cmap="viridis", s=80, edgecolor='k', transform=ccrs.PlateCarree())
+            for _, r in sel_meta.iterrows():
+                ax_map.text(r["lon"]+0.5, r["lat"]+0.5, r["gauge_id"], transform=ccrs.PlateCarree())
+            ax_map.set_title("Selected Gauges: Wasserstein Distance")
+            for idx, gid in enumerate(selected):
+                row_idx = 1 + idx // 3
+                col_idx = idx % 3
+                ax = fig.add_subplot(gs[row_idx, col_idx])
+                sub = fdc_sel[fdc_sel["gauge_id"]==gid]
+                if sub.empty:
+                    continue
+                ax.plot(sub["percentile_exceedance"], sub["obs_flow"], label="Obs")
+                ax.plot(sub["percentile_exceedance"], sub["sim_flow"], label="Sim")
+                ax.set_yscale("log")
+                ax.set_xlabel("Exceedance Probability (%)")
+                ax.set_ylabel("Discharge (m3/s)")
+                rn = gauge_meta[gauge_meta["gauge_id"]==gid]["river_name"].values
+                title = f"{gid} {rn[0] if len(rn)>0 else ''}"
+                ax.set_title(title)
+                ax.grid(True, which="both", ls="--", lw=0.5)
+                if row_idx==2 and col_idx==2:
+                    ax.legend(loc="best")
+            plt.tight_layout()
+            plt.savefig(fdc_panel_png, dpi=300)
+            plt.close(fig)
+        except Exception as e:
+            warnings.warn(f"Error plotting FDC panels: {e}")
+    else:
+        warnings.warn("No selected gauges in FDC data to plot panels.")
+else:
+    warnings.warn("No gauge_id column in FDC data; skipping panel plotting.")

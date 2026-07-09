@@ -1,0 +1,449 @@
+import xarray as xr
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import os
+import glob
+from scipy.stats import wasserstein_distance
+from scipy.spatial import cKDTree # For efficient nearest neighbor search
+
+# --- Configuration ---
+# Base directories
+BASE_DATA_DIR = "./data/sample/"
+E3SM_DATA_DIR = os.path.join(BASE_DATA_DIR, "e3sm/rof/")
+OBS_STREAMFLOW_DIR = os.path.join(BASE_DATA_DIR, "obs/streamflow/")
+GAUGE_METADATA_PATH = os.path.join(BASE_DATA_DIR, "obs/gauge_metadata.csv")
+
+# E3SM specific
+E3SM_CASE_NAME = "sample.v3.LR.historical"
+E3SM_VAR_DISCHARGE = "RIVER_DISCHARGE_OVER_LAND_LIQ"
+
+# Analysis period
+START_YEAR = 1985
+END_YEAR = 1989
+ANALYSIS_PERIOD = f"{START_YEAR}-{END_YEAR}"
+
+# Output directory (user-specified absolute path)
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/gemini-2.5-flash_baseline/task_04_streamflow_fdc/run2_output"
+
+# Specific gauges for FDC plots (Name: ID)
+FDC_PLOT_GAUGES = {
+    "Amazon": 3629000,
+    "Missouri": 4121801,
+    "Columbia": 4115200,
+    "Danube": 6742900,
+    "Mekong": 2969100,
+    "Orange": 1159100,
+}
+
+# --- Helper Functions ---
+
+def create_output_dir(path):
+    """Creates a directory if it doesn't exist."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        print(f"Output directory created: {path}")
+    except Exception as e:
+        print(f"Error creating output directory {path}: {e}")
+        raise
+
+def load_e3sm_mosart_daily(start_year, end_year, case_name, data_dir, var_name):
+    """
+    Loads daily E3SM MOSART data for a given period.
+    Assumes 'h1' files are daily.
+    Handles both (time, ngrid) and (time, lat, lon) grid structures by converting to (time, ngrid).
+    """
+    all_files = []
+    for year in range(start_year, end_year + 1):
+        all_files.extend(glob.glob(os.path.join(data_dir, f"{case_name}.mosart.h1.{year}-*-*-00000.nc")))
+    all_files = sorted(list(set(all_files))) # Remove duplicates and sort
+
+    if not all_files:
+        raise FileNotFoundError(f"No E3SM MOSART daily files found for {case_name} in {data_dir} for {start_year}-{end_year}")
+
+    print(f"Loading {len(all_files)} E3SM MOSART daily files...")
+
+    # Preprocess function to ensure consistent time dimension and variable selection
+    def preprocess(ds):
+        if 'time' in ds.dims and 'time_bnds' in ds.variables:
+            ds = ds.drop_vars('time_bnds', errors='ignore') # Drop time_bnds if present to avoid issues with concat
+        if var_name not in ds.variables:
+            raise ValueError(f"Variable '{var_name}' not found in file: {ds.encoding['source']}")
+        # Keep lat/lon. If they are data_vars, they will be selected. If they are coords, they will be kept.
+        # We need them for grid info.
+        return ds[[var_name, 'lat', 'lon']] if 'lat' in ds.variables and 'lon' in ds.variables else ds[[var_name]]
+
+    try:
+        ds = xr.open_mfdataset(all_files, combine='by_coords', preprocess=preprocess, parallel=True)
+        
+        # Ensure time dimension is datetime objects
+        if ds['time'].dtype == 'O': # If object type, try converting
+            ds['time'] = ds['time'].astype('datetime64[ns]')
+        
+        # Handle MOSART grid structure: it can be (time, ngrid) or (time, lat, lon)
+        if 'ngrid' in ds[var_name].dims:
+            # Already has 'ngrid' dimension, assume 'lat' and 'lon' are 1D coords of 'ngrid'
+            if 'lat' not in ds.coords or 'lon' not in ds.coords or ds['lat'].dims != ('ngrid',) or ds['lon'].dims != ('ngrid',):
+                # If lat/lon are data_vars, make them coords
+                if 'lat' in ds.data_vars and 'lon' in ds.data_vars and ds['lat'].dims == ('ngrid',) and ds['lon'].dims == ('ngrid',):
+                    ds = ds.set_coords(['lat', 'lon'])
+                else:
+                    raise ValueError("MOSART data has 'ngrid' dimension but 'lat'/'lon' are not 1D coordinates of 'ngrid'.")
+        elif 'lat' in ds[var_name].dims and 'lon' in ds[var_name].dims:
+            # Data is on a 2D lat/lon grid, stack it to 'ngrid' for consistency
+            print("MOSART data appears to be on a 2D lat/lon grid. Stacking to 'ngrid' for nearest neighbor search.")
+            # The dimensions to stack are 'lat' and 'lon' if they are the actual dimension names.
+            # If 'lat' and 'lon' are data variables on other dimensions (e.g., 'y', 'x'),
+            # then the stack call should use those dimension names.
+            # Assuming 'lat' and 'lon' are the actual dimension names for the 2D grid.
+            ds = ds.stack(ngrid=('lat', 'lon'))
+            
+            # After stacking, 'ngrid' is a MultiIndex coordinate.
+            # We need to explicitly create 1D 'lat' and 'lon' coordinates for the new 'ngrid' dimension.
+            # These 1D coordinates will be derived from the levels of the 'ngrid' MultiIndex.
+            # The error was due to trying to access `ds.ngrid` which might resolve to a DataArray
+            # if a variable named 'ngrid' existed, instead of the MultiIndex coordinate.
+            # Using `ds.coords['ngrid']` is the explicit way to access the MultiIndex.
+            ds['lat'] = ('ngrid', ds.coords['ngrid'].get_level_values('lat').values)
+            ds['lon'] = ('ngrid', ds.coords['ngrid'].get_level_values('lon').values)
+            ds = ds.set_coords(['lat', 'lon'])
+        else:
+            raise ValueError("Could not determine MOSART spatial grid dimensions (expected 'ngrid' or 'lat'/'lon' 2D).")
+
+        print(f"Loaded E3SM MOSART data with shape: {ds[var_name].shape}")
+        return ds
+    except Exception as e:
+        print(f"Error loading E3SM MOSART data: {e}")
+        raise
+
+def load_gauge_metadata(metadata_path):
+    """Loads gauge metadata."""
+    try:
+        df = pd.read_csv(metadata_path)
+        df.set_index('gauge_id', inplace=True)
+        print(f"Loaded {len(df)} gauge metadata entries.")
+        return df
+    except Exception as e:
+        print(f"Error loading gauge metadata from {metadata_path}: {e}")
+        raise
+
+def load_obs_streamflow(gauge_id, obs_dir, start_date, end_date):
+    """Loads observed streamflow for a specific gauge and period."""
+    file_path = os.path.join(obs_dir, f"{gauge_id}.csv")
+    try:
+        df = pd.read_csv(file_path, parse_dates=['date'], index_col='date')
+        df = df.loc[start_date:end_date]
+        df = df.rename(columns={'discharge_m3s': 'discharge_obs'})
+        return df['discharge_obs']
+    except FileNotFoundError:
+        print(f"Observation file not found for gauge {gauge_id}: {file_path}")
+        return pd.Series(dtype=float)
+    except Exception as e:
+        print(f"Error loading observation data for gauge {gauge_id} from {file_path}: {e}")
+        return pd.Series(dtype=float)
+
+def find_nearest_grid_cell_ckdtree(gauge_lat, gauge_lon, kdtree):
+    """
+    Finds the nearest model grid cell using a pre-built cKDTree.
+    Returns the index in the flattened model grid and the distance.
+    Assumes model_lats and model_lons used to build the KDTree are already in the desired range (e.g., -180 to 180).
+    """
+    dist, idx = kdtree.query([gauge_lat, gauge_lon])
+    return idx, dist
+
+def compute_fdc(data, num_points=100):
+    """
+    Computes Flow Duration Curve (FDC) values.
+    Returns (exceedance_probabilities, discharge_values).
+    """
+    if data.empty or len(data) < 2:
+        return np.array([]), np.array([])
+    
+    # Sort data in descending order
+    sorted_data = data.sort_values(ascending=False).values
+    # Calculate exceedance probabilities
+    exceedance_probs = np.linspace(0, 1, len(sorted_data))
+    
+    # Interpolate to a fixed number of points for consistent plotting/comparison
+    target_probs = np.linspace(0, 1, num_points)
+    interp_func = np.interp(target_probs, exceedance_probs, sorted_data)
+    
+    return target_probs, interp_func
+
+def compute_fdc_metrics(obs_data, sim_data):
+    """
+    Computes FDC-related metrics: volume bias, Wasserstein distance, quantile ratios.
+    Assumes obs_data and sim_data are aligned pandas Series.
+    """
+    metrics = {}
+
+    # Ensure data is clean and has enough points
+    obs_data = obs_data.dropna()
+    sim_data = sim_data.dropna()
+
+    if obs_data.empty or sim_data.empty or len(obs_data) < 365 or len(sim_data) < 365: # Require at least one year of data
+        print("Warning: Not enough valid data points for FDC metrics (min 365 days). Skipping.")
+        return {
+            'volume_bias': np.nan,
+            'wasserstein_distance': np.nan,
+            'Q10_ratio': np.nan,
+            'Q50_ratio': np.nan,
+            'Q90_ratio': np.nan,
+        }
+
+    # Volume Bias
+    obs_mean = obs_data.mean()
+    sim_mean = sim_data.mean()
+    metrics['volume_bias'] = (sim_mean - obs_mean) / obs_mean if obs_mean != 0 else np.nan
+
+    # Wasserstein Distance (Earth Mover's Distance)
+    metrics['wasserstein_distance'] = wasserstein_distance(obs_data.values, sim_data.values)
+
+    # Quantile Ratios (Q10, Q50, Q90)
+    # Q10: high flow (10% exceedance, 90th percentile of data)
+    # Q50: median flow (50% exceedance, 50th percentile of data)
+    # Q90: low flow (90% exceedance, 10th percentile of data)
+    
+    # Ensure quantiles are not zero to avoid division by zero
+    obs_q10 = obs_data.quantile(0.9)
+    obs_q50 = obs_data.quantile(0.5)
+    obs_q90 = obs_data.quantile(0.1)
+
+    sim_q10 = sim_data.quantile(0.9)
+    sim_q50 = sim_data.quantile(0.5)
+    sim_q90 = sim_data.quantile(0.1)
+
+    metrics['Q10_ratio'] = sim_q10 / obs_q10 if obs_q10 != 0 else np.nan
+    metrics['Q50_ratio'] = sim_q50 / obs_q50 if obs_q50 != 0 else np.nan
+    metrics['Q90_ratio'] = sim_q90 / obs_q90 if obs_q90 != 0 else np.nan
+
+    return metrics
+
+# --- Main Script ---
+if __name__ == "__main__":
+    try:
+        create_output_dir(OUTPUT_DIR)
+    except Exception as e:
+        print(f"Exiting due to output directory error: {e}")
+        exit()
+
+    # 1. Load E3SM MOSART data
+    e3sm_ds = None
+    try:
+        e3sm_ds = load_e3sm_mosart_daily(START_YEAR, END_YEAR, E3SM_CASE_NAME, E3SM_DATA_DIR, E3SM_VAR_DISCHARGE)
+    except Exception as e:
+        print(f"Failed to load E3SM MOSART data. Exiting. Error: {e}")
+        exit()
+
+    # Prepare E3SM grid for nearest neighbor search
+    model_lats = e3sm_ds['lat'].values
+    model_lons = e3sm_ds['lon'].values
+    
+    # Adjust model_lons to -180 to 180 if they are 0-360 for consistency with gauge_metadata and cartopy
+    if model_lons.max() > 180: # Check if max longitude is > 180, implying 0-360 range
+        model_lons[model_lons > 180] -= 360
+        print("Converted E3SM model longitudes from 0-360 to -180-180 range.")
+    
+    # Create KDTree for efficient nearest neighbor search
+    model_coords = np.vstack((model_lats, model_lons)).T
+    kdtree = cKDTree(model_coords)
+    print(f"Built KDTree for {len(model_lats)} model grid points.")
+
+    # 2. Load Gauge Metadata
+    gauge_metadata = None
+    try:
+        gauge_metadata = load_gauge_metadata(GAUGE_METADATA_PATH)
+    except Exception as e:
+        print(f"Failed to load gauge metadata. Exiting. Error: {e}")
+        exit()
+
+    all_metrics = []
+    all_fdc_data = {} # Store FDC data for plotting specific gauges
+
+    start_date_str = f"{START_YEAR}-01-01"
+    end_date_str = f"{END_YEAR}-12-31"
+
+    # 3. Process Each Gauge
+    for gauge_id, gauge_info in gauge_metadata.iterrows():
+        print(f"\nProcessing gauge: {gauge_id} ({gauge_info['river_name']})")
+        
+        gauge_lat = gauge_info['lat']
+        gauge_lon = gauge_info['lon']
+
+        # Find nearest E3SM grid cell
+        try:
+            nearest_idx, dist = find_nearest_grid_cell_ckdtree(gauge_lat, gauge_lon, kdtree)
+            matched_model_lat = model_lats[nearest_idx]
+            matched_model_lon = model_lons[nearest_idx]
+            print(f"  Matched to model grid point (idx={nearest_idx}) at lat={matched_model_lat:.2f}, lon={matched_model_lon:.2f} (dist={dist:.2f} deg)")
+        except Exception as e:
+            print(f"  Error finding nearest grid cell for gauge {gauge_id}: {e}. Skipping.")
+            continue
+
+        # Extract E3SM simulated discharge
+        sim_discharge_series = None
+        try:
+            # Select the data for the matched grid cell
+            sim_discharge_da = e3sm_ds[E3SM_VAR_DISCHARGE].isel(ngrid=nearest_idx)
+            sim_discharge_series = sim_discharge_da.to_series().rename('discharge_sim')
+            sim_discharge_series.index = sim_discharge_series.index.normalize() # Remove time component from datetime index
+            sim_discharge_series = sim_discharge_series.loc[start_date_str:end_date_str]
+            print(f"  Extracted {len(sim_discharge_series)} simulated daily values.")
+        except Exception as e:
+            print(f"  Error extracting simulated discharge for gauge {gauge_id}: {e}. Skipping.")
+            continue
+
+        # Load observed streamflow
+        obs_discharge_series = load_obs_streamflow(gauge_id, OBS_STREAMFLOW_DIR, start_date_str, end_date_str)
+        if obs_discharge_series.empty:
+            print(f"  No valid observation data for gauge {gauge_id}. Skipping.")
+            continue
+        print(f"  Loaded {len(obs_discharge_series)} observed daily values.")
+
+        # Align data by date
+        combined_df = pd.DataFrame({'discharge_obs': obs_discharge_series, 'discharge_sim': sim_discharge_series})
+        combined_df = combined_df.dropna() # Drop days where either obs or sim is missing
+        
+        if combined_df.empty or len(combined_df) < 365: # Require at least one year of data
+            print(f"  Not enough overlapping valid data for gauge {gauge_id} after alignment (min 365 days). Skipping.")
+            continue
+
+        obs_aligned = combined_df['discharge_obs']
+        sim_aligned = combined_df['discharge_sim']
+        print(f"  Aligned data has {len(obs_aligned)} common daily values.")
+
+        # Compute FDC and Metrics
+        try:
+            metrics = compute_fdc_metrics(obs_aligned, sim_aligned)
+            metrics['gauge_id'] = gauge_id
+            metrics['gauge_name'] = gauge_info['river_name']
+            metrics['lat'] = gauge_lat
+            metrics['lon'] = gauge_lon
+            all_metrics.append(metrics)
+            print(f"  Metrics computed: {metrics}")
+
+            # Store FDC data if this gauge is one of the specific plot gauges
+            if gauge_id in FDC_PLOT_GAUGES.values():
+                obs_probs, obs_fdc = compute_fdc(obs_aligned)
+                sim_probs, sim_fdc = compute_fdc(sim_aligned)
+                all_fdc_data[gauge_id] = {
+                    'gauge_name': gauge_info['river_name'],
+                    'obs_probs': obs_probs, 'obs_fdc': obs_fdc,
+                    'sim_probs': sim_probs, 'sim_fdc': sim_fdc
+                }
+                # Save FDC percentile data for this gauge
+                fdc_df = pd.DataFrame({
+                    'exceedance_probability': obs_probs,
+                    'discharge_obs_m3s': obs_fdc,
+                    'discharge_sim_m3s': sim_fdc
+                })
+                fdc_output_path = os.path.join(OUTPUT_DIR, f"fdc_data_{gauge_id}_{ANALYSIS_PERIOD}.csv")
+                try:
+                    fdc_df.to_csv(fdc_output_path, index=False)
+                    print(f"  Saved FDC data for gauge {gauge_id} to {fdc_output_path}")
+                except Exception as e:
+                    print(f"  Error saving FDC data for gauge {gauge_id}: {e}")
+
+        except Exception as e:
+            print(f"  Error computing FDC metrics for gauge {gauge_id}: {e}. Skipping metrics for this gauge.")
+            continue
+
+    # 4. Save All Metrics
+    metrics_df = pd.DataFrame(all_metrics)
+    if not metrics_df.empty:
+        metrics_output_path = os.path.join(OUTPUT_DIR, f"streamflow_fdc_metrics_{ANALYSIS_PERIOD}.csv")
+        try:
+            metrics_df.to_csv(metrics_output_path, index=False)
+            print(f"\nSaved all FDC metrics to {metrics_output_path}")
+        except Exception as e:
+            print(f"Error saving all FDC metrics: {e}")
+    else:
+        print("\nNo metrics were computed for any gauge.")
+
+    # 5. Plotting
+    # Map Plot: Wasserstein Distance
+    if not metrics_df.empty and 'wasserstein_distance' in metrics_df.columns:
+        print("\nGenerating map plot of Wasserstein Distance...")
+        try:
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+            ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+
+            ax.add_feature(ccrs.feature.COASTLINE)
+            ax.add_feature(ccrs.feature.BORDERS, linestyle=':')
+            ax.add_feature(ccrs.feature.LAND, edgecolor='black', facecolor='lightgray')
+            ax.add_feature(ccrs.feature.OCEAN, facecolor='lightblue')
+            ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
+
+            # Plot points, color-coded by Wasserstein distance
+            # Cap vmax for better visualization if there are extreme outliers
+            vmax_val = metrics_df['wasserstein_distance'].quantile(0.95) if not metrics_df['wasserstein_distance'].isnull().all() else None
+            scatter = ax.scatter(metrics_df['lon'], metrics_df['lat'],
+                                 c=metrics_df['wasserstein_distance'],
+                                 cmap='viridis_r', s=50, transform=ccrs.PlateCarree(),
+                                 edgecolor='black', linewidth=0.5,
+                                 vmin=0, vmax=vmax_val) 
+
+            cbar = plt.colorbar(scatter, ax=ax, orientation='vertical', shrink=0.7)
+            cbar.set_label('Wasserstein Distance (m$^3$/s)')
+            ax.set_title(f'E3SM vs Obs Streamflow: Wasserstein Distance ({ANALYSIS_PERIOD})')
+
+            map_output_path = os.path.join(OUTPUT_DIR, f"map_wasserstein_distance_{ANALYSIS_PERIOD}.png")
+            plt.savefig(map_output_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"Saved map plot to {map_output_path}")
+        except Exception as e:
+            print(f"Error generating map plot: {e}")
+    else:
+        print("\nSkipping map plot: No metrics data or 'wasserstein_distance' column missing.")
+
+    # FDC Comparison Panels for specific gauges
+    if all_fdc_data:
+        print("\nGenerating FDC comparison panels...")
+        try:
+            # Filter FDC_PLOT_GAUGES to only include those for which we have data
+            plot_gauges_with_data = {name: gid for name, gid in FDC_PLOT_GAUGES.items() if gid in all_fdc_data}
+            num_gauges_to_plot = len(plot_gauges_with_data)
+
+            if num_gauges_to_plot == 0:
+                print("No specific gauges with available FDC data for plotting.")
+            else:
+                # Determine grid size for subplots
+                rows = int(np.ceil(num_gauges_to_plot / 3))
+                cols = min(num_gauges_to_plot, 3)
+                
+                fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4), layout='constrained')
+                axes = axes.flatten() # Flatten for easy iteration
+
+                for i, (gauge_name, gauge_id) in enumerate(plot_gauges_with_data.items()):
+                    ax = axes[i]
+                    data = all_fdc_data[gauge_id]
+                    
+                    ax.plot(data['obs_probs'] * 100, data['obs_fdc'], label='Observed', color='blue')
+                    ax.plot(data['sim_probs'] * 100, data['sim_fdc'], label='E3SM', color='red', linestyle='--')
+                    
+                    ax.set_xlabel('Exceedance Probability (%)')
+                    ax.set_ylabel('Discharge (m$^3$/s)')
+                    ax.set_title(f"{gauge_name} (ID: {gauge_id})")
+                    ax.legend()
+                    ax.grid(True, which="both", ls="--", c='0.7')
+                    ax.set_yscale('log') # Use log scale for discharge
+                    ax.set_xlim(0, 100) # Exceedance probability from 0 to 100%
+
+                # Hide any unused subplots
+                for j in range(num_gauges_to_plot, len(axes)):
+                    axes[j].set_visible(False)
+
+                fig.suptitle(f'E3SM vs Obs Streamflow: Flow Duration Curves ({ANALYSIS_PERIOD})', fontsize=16)
+                fdc_output_path = os.path.join(OUTPUT_DIR, f"fdc_comparison_panels_{ANALYSIS_PERIOD}.png")
+                plt.savefig(fdc_output_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+                print(f"Saved FDC comparison panels to {fdc_output_path}")
+
+        except Exception as e:
+            print(f"Error generating FDC comparison panels: {e}")
+    else:
+        print("\nSkipping FDC comparison panels: No FDC data collected for specific gauges.")
+
+    print("\nScript finished.")

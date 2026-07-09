@@ -1,0 +1,47 @@
+name: E3SM ELM Runoff Climatology Analysis
+description: 'Extract climatological mean runoff from E3SM ELM monthly output (1985-1989).
+
+  Compute area-weighted global mean and produce a map with statistics overlaid.
+
+  '
+settings:
+  data_dir: ./data/sample/e3sm/
+  case_name: sample.v3.LR.historical
+  component: elm
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_protocol/task_02_seasonal_runoff/run2_output
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  variable: QRUNOFF
+steps:
+- id: extract_runoff_field
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+    variable: ${settings.variable}
+    years: ${settings.years}
+  outputs:
+    field_file: ${settings.output_dir}/runoff_mean_1985-1989.nc
+- id: compute_global_stats
+  tool: compute_zonal_stats
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    variable: ${settings.variable}
+    lat_bands: ''
+  outputs:
+    stats_file: ${settings.output_dir}/runoff_global_stats.csv
+- id: plot_runoff_map
+  tool: plot_gridded_map
+  params:
+    field_file: ${extract_runoff_field.outputs.field_file}
+    variable: ${settings.variable}
+    title: E3SM ELM Mean Runoff (1985-1989)
+    units: mm/day
+    stats_file: ${compute_global_stats.outputs.stats_file}
+  outputs:
+    plot_file: ${settings.output_dir}/runoff_map_1985-1989.png

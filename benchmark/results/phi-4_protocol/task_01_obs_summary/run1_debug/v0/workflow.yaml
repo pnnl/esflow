@@ -1,0 +1,39 @@
+name: Task 01 - Load Metadata and Extract Observations
+description: 'This workflow loads GRDC gauge metadata, extracts monthly streamflow
+  observations for specified gauges from 1985 to 1989, and computes summary statistics.
+
+  '
+settings:
+  data_dir: ./data/sample/obs/streamflow/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_01_obs_summary/run1_output
+steps:
+- id: load_gauge_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.data_dir}/gauge_metadata.csv
+  outputs:
+    metadata_file: gauge_metadata_validated.csv
+    n_gauges: n_gauges_count
+- id: extract_streamflow_observations
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.data_dir}
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    timeseries_file: streamflow_timeseries.csv
+    n_gauges: n_extracted_gauges
+- id: compute_summary_statistics
+  tool: compute_summary_stats
+  params:
+    timeseries_file: ${extract_streamflow_observations.outputs.timeseries_file}
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+  outputs:
+    stats_file: summary_statistics.csv
+    n_columns: n_stat_columns

@@ -1,0 +1,509 @@
+import os
+import glob
+import numpy as np
+import xarray as xr
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import json
+from shapely.geometry import shape, Point, MultiPolygon
+from shapely.validation import make_valid
+from shapely.prepared import prep
+import warnings
+warnings.filterwarnings("ignore")
+
+output_dir = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-opus-4-6_baseline/task_06_water_balance/run1_debug/v1/output"
+os.makedirs(output_dir, exist_ok=True)
+
+# Constants
+case_name = "sample.v3.LR.historical"
+lnd_dir = "./data/sample/e3sm/lnd"
+years = range(1985, 1990)
+months = range(1, 13)
+
+# Unit conversion: mm/s -> mm/day
+MM_S_TO_MM_DAY = 86400.0
+
+# Basin definitions
+basin_info = {
+    "3629000": "Amazon",
+    "4121801": "Missouri",
+    "4115200": "Columbia",
+    "6742900": "Danube",
+    "2969100": "Mekong",
+    "1159100": "Orange",
+}
+
+# -------------------------------------------------------
+# 1. Load ELM monthly data for 1985-1989
+# -------------------------------------------------------
+print("Loading ELM monthly data for 1985-1989...")
+file_list = []
+for yr in years:
+    for mo in months:
+        fname = os.path.join(lnd_dir, f"{case_name}.elm.h0.{yr:04d}-{mo:02d}.nc")
+        if os.path.exists(fname):
+            file_list.append(fname)
+        else:
+            print(f"  Warning: missing file {fname}")
+
+print(f"  Found {len(file_list)} files")
+
+try:
+    ds = xr.open_mfdataset(file_list, combine="by_coords", decode_times=True)
+    print(f"  Dataset dimensions: {dict(ds.dims)}")
+except Exception as e:
+    print(f"  Error loading data: {e}")
+    raise
+
+# -------------------------------------------------------
+# 2. Compute time-mean fields (climatology)
+# -------------------------------------------------------
+print("Computing climatological means...")
+
+P = (ds["RAIN"] + ds["SNOW"]).mean(dim="time") * MM_S_TO_MM_DAY
+print(f"  P (RAIN+SNOW) computed, shape: {P.shape}")
+
+ET = (ds["QVEGE"] + ds["QVEGT"] + ds["QSOIL"]).mean(dim="time") * MM_S_TO_MM_DAY
+print(f"  ET (QVEGE+QVEGT+QSOIL) computed, shape: {ET.shape}")
+
+Q = ds["QRUNOFF"].mean(dim="time") * MM_S_TO_MM_DAY
+print(f"  Q (QRUNOFF) computed, shape: {Q.shape}")
+
+residual = P - ET - Q
+print(f"  Residual (P - ET - Q) computed, shape: {residual.shape}")
+
+# -------------------------------------------------------
+# 3. Get grid info for area weighting
+# -------------------------------------------------------
+print("Computing area-weighted global means...")
+
+try:
+    if "area" in ds:
+        area = ds["area"]
+    else:
+        area = None
+
+    if "landfrac" in ds:
+        landfrac = ds["landfrac"]
+    elif "landmask" in ds:
+        landfrac = ds["landmask"].astype(float)
+    else:
+        landfrac = xr.ones_like(P)
+
+    if "time" in landfrac.dims:
+        landfrac = landfrac.isel(time=0, drop=True)
+
+    if area is not None:
+        if "time" in area.dims:
+            area = area.isel(time=0, drop=True)
+        weights = area * landfrac
+    else:
+        lat_vals = ds["lat"]
+        if lat_vals.ndim == 1:
+            cos_lat = np.cos(np.deg2rad(lat_vals))
+            weights = cos_lat * landfrac
+        else:
+            cos_lat = np.cos(np.deg2rad(lat_vals))
+            weights = cos_lat * landfrac
+
+    weights = weights.where(weights > 0, 0)
+    weights = weights.fillna(0)
+
+    P_masked = P.where(weights > 0)
+    ET_masked = ET.where(weights > 0)
+    Q_masked = Q.where(weights > 0)
+    residual_masked = residual.where(weights > 0)
+
+    total_weight = float(weights.sum())
+
+    P_global = float((P_masked * weights).sum() / total_weight)
+    ET_global = float((ET_masked * weights).sum() / total_weight)
+    Q_global = float((Q_masked * weights).sum() / total_weight)
+    residual_global = float((residual_masked * weights).sum() / total_weight)
+
+    print(f"  Global mean P  = {P_global:.4f} mm/day")
+    print(f"  Global mean ET = {ET_global:.4f} mm/day")
+    print(f"  Global mean Q  = {Q_global:.4f} mm/day")
+    print(f"  Global mean Residual (P-ET-Q) = {residual_global:.4f} mm/day")
+
+except Exception as e:
+    print(f"  Error in area weighting: {e}")
+    import traceback; traceback.print_exc()
+    P_global = ET_global = Q_global = residual_global = np.nan
+
+# -------------------------------------------------------
+# 4. Get lat/lon coordinates for spatial plots
+# -------------------------------------------------------
+print("Preparing coordinate arrays...")
+
+if "lat" in ds.coords and "lon" in ds.coords:
+    lats = ds["lat"].values
+    lons = ds["lon"].values
+elif "lat" in ds and "lon" in ds:
+    lats = ds["lat"].values
+    lons = ds["lon"].values
+else:
+    raise ValueError("Cannot find lat/lon in dataset")
+
+if lats.ndim == 1 and lons.ndim == 1:
+    lon2d, lat2d = np.meshgrid(lons, lats)
+elif lats.ndim == 2:
+    lat2d = lats
+    lon2d = lons
+else:
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+print(f"  Grid shape: lat2d={lat2d.shape}, lon2d={lon2d.shape}")
+
+# -------------------------------------------------------
+# 5. Load basin polygons and clip fields
+# -------------------------------------------------------
+print("Loading basin polygons...")
+
+try:
+    with open("./data/sample/obs/basin_polygons.geojson", "r") as f:
+        basins_geojson = json.load(f)
+
+    basin_polygons = {}
+    for feature in basins_geojson["features"]:
+        gid = str(feature["properties"].get("grdc_no", feature["properties"].get("gauge_id", "")))
+        if gid in basin_info:
+            poly = shape(feature["geometry"])
+            # Fix invalid geometry using buffer(0) and make_valid
+            if not poly.is_valid:
+                print(f"  Fixing invalid geometry for {basin_info[gid]}...")
+                try:
+                    poly = make_valid(poly)
+                except Exception:
+                    poly = poly.buffer(0)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+            basin_polygons[gid] = poly
+            print(f"  Loaded polygon for {basin_info[gid]} (gauge {gid}), valid={poly.is_valid}")
+
+    print(f"  Loaded {len(basin_polygons)} basin polygons")
+except Exception as e:
+    print(f"  Error loading basin polygons: {e}")
+    basin_polygons = {}
+
+# Load gauge metadata
+try:
+    gauge_meta = pd.read_csv("./data/sample/obs/gauge_metadata.csv")
+    print(f"  Gauge metadata: {len(gauge_meta)} gauges")
+except Exception as e:
+    print(f"  Error loading gauge metadata: {e}")
+    gauge_meta = pd.DataFrame()
+
+# -------------------------------------------------------
+# 6. Compute basin masks and per-basin statistics
+# -------------------------------------------------------
+print("Computing basin masks and statistics...")
+
+P_vals = P.values
+ET_vals = ET.values
+Q_vals = Q.values
+res_vals = residual.values
+weight_vals = weights.values
+
+basin_stats = {}
+basin_masks = {}
+
+for gid, bname in basin_info.items():
+    if gid not in basin_polygons:
+        print(f"  Skipping {bname} - no polygon found")
+        basin_stats[bname] = {"P": np.nan, "ET": np.nan, "Q": np.nan, "Residual": np.nan}
+        continue
+
+    poly = basin_polygons[gid]
+    print(f"  Processing {bname} basin...")
+
+    # Use bounding box to limit search area
+    minx, miny, maxx, maxy = poly.bounds
+
+    # Prepare the polygon for faster containment checks
+    prepared_poly = prep(poly)
+
+    mask = np.zeros(lat2d.shape, dtype=bool)
+
+    # First try with original longitudes
+    for i in range(lat2d.shape[0]):
+        lat_i = lat2d[i, 0] if lat2d.ndim == 2 else lats[i]
+        if lat_i < miny - 1 or lat_i > maxy + 1:
+            continue
+        for j in range(lat2d.shape[1]):
+            lon_j = float(lon2d[i, j])
+            lat_j = float(lat2d[i, j])
+            if lon_j < minx - 1 or lon_j > maxx + 1:
+                continue
+            try:
+                pt = Point(lon_j, lat_j)
+                if prepared_poly.contains(pt):
+                    mask[i, j] = True
+            except Exception:
+                pass
+
+    n_cells = mask.sum()
+
+    if n_cells == 0:
+        # Try with longitude shifted by -360 (for 0-360 grids vs -180-180 polygons)
+        print(f"    No cells found, trying lon shift -360...")
+        minx2, miny2, maxx2, maxy2 = minx + 360, miny, maxx + 360, maxy
+        for i in range(lat2d.shape[0]):
+            lat_i = lat2d[i, 0] if lat2d.ndim == 2 else lats[i]
+            if lat_i < miny - 1 or lat_i > maxy + 1:
+                continue
+            for j in range(lat2d.shape[1]):
+                lon_j = float(lon2d[i, j])
+                lat_j = float(lat2d[i, j])
+                lon_shifted = lon_j - 360 if lon_j > 180 else lon_j
+                if lon_shifted < minx - 1 or lon_shifted > maxx + 1:
+                    continue
+                try:
+                    pt = Point(lon_shifted, lat_j)
+                    if prepared_poly.contains(pt):
+                        mask[i, j] = True
+                except Exception:
+                    pass
+        n_cells = mask.sum()
+
+    print(f"    {n_cells} grid cells in basin")
+    basin_masks[gid] = mask
+
+    if n_cells == 0:
+        basin_stats[bname] = {"P": np.nan, "ET": np.nan, "Q": np.nan, "Residual": np.nan}
+        continue
+
+    w = weight_vals[mask]
+    w_sum = w.sum()
+    if w_sum > 0:
+        p_basin = np.nansum(P_vals[mask] * w) / w_sum
+        et_basin = np.nansum(ET_vals[mask] * w) / w_sum
+        q_basin = np.nansum(Q_vals[mask] * w) / w_sum
+        res_basin = np.nansum(res_vals[mask] * w) / w_sum
+    else:
+        p_basin = np.nanmean(P_vals[mask])
+        et_basin = np.nanmean(ET_vals[mask])
+        q_basin = np.nanmean(Q_vals[mask])
+        res_basin = np.nanmean(res_vals[mask])
+
+    basin_stats[bname] = {
+        "P": p_basin,
+        "ET": et_basin,
+        "Q": q_basin,
+        "Residual": res_basin,
+        "n_cells": n_cells,
+    }
+    print(f"    P={p_basin:.3f}, ET={et_basin:.3f}, Q={q_basin:.3f}, Res={res_basin:.4f} mm/day")
+
+# -------------------------------------------------------
+# 7. Save statistics to CSV
+# -------------------------------------------------------
+print("Saving statistics to CSV...")
+
+try:
+    global_df = pd.DataFrame({
+        "Component": ["P (RAIN+SNOW)", "ET (QVEGE+QVEGT+QSOIL)", "Q (QRUNOFF)", "Residual (P-ET-Q)"],
+        "Global_Mean_mm_day": [P_global, ET_global, Q_global, residual_global],
+    })
+    global_csv = os.path.join(output_dir, "global_water_balance.csv")
+    global_df.to_csv(global_csv, index=False)
+    print(f"  Saved {global_csv}")
+
+    basin_rows = []
+    for bname, stats in basin_stats.items():
+        basin_rows.append({
+            "Basin": bname,
+            "P_mm_day": stats["P"],
+            "ET_mm_day": stats["ET"],
+            "Q_mm_day": stats["Q"],
+            "Residual_mm_day": stats["Residual"],
+            "n_cells": stats.get("n_cells", 0),
+        })
+    basin_df = pd.DataFrame(basin_rows)
+    basin_csv = os.path.join(output_dir, "basin_water_balance.csv")
+    basin_df.to_csv(basin_csv, index=False)
+    print(f"  Saved {basin_csv}")
+except Exception as e:
+    print(f"  Error saving CSV: {e}")
+
+# -------------------------------------------------------
+# 8. Save fields to NetCDF
+# -------------------------------------------------------
+print("Saving fields to NetCDF...")
+
+try:
+    out_ds = xr.Dataset()
+    out_ds["P"] = P.copy()
+    out_ds["P"].attrs = {"units": "mm/day", "long_name": "Precipitation (RAIN+SNOW)"}
+    out_ds["ET"] = ET.copy()
+    out_ds["ET"].attrs = {"units": "mm/day", "long_name": "Evapotranspiration (QVEGE+QVEGT+QSOIL)"}
+    out_ds["Q"] = Q.copy()
+    out_ds["Q"].attrs = {"units": "mm/day", "long_name": "Total Runoff (QRUNOFF)"}
+    out_ds["Residual"] = residual.copy()
+    out_ds["Residual"].attrs = {"units": "mm/day", "long_name": "Water Balance Residual (P-ET-Q)"}
+    out_ds.attrs["description"] = "ELM water balance closure, 1985-1989 climatology"
+    out_ds.attrs["case"] = case_name
+
+    nc_path = os.path.join(output_dir, "water_balance_fields.nc")
+    out_ds.to_netcdf(nc_path)
+    print(f"  Saved {nc_path}")
+except Exception as e:
+    print(f"  Error saving NetCDF: {e}")
+
+# -------------------------------------------------------
+# 9. Produce composite figure
+# -------------------------------------------------------
+print("Creating composite figure...")
+
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    has_cartopy = True
+except ImportError:
+    has_cartopy = False
+    print("  Cartopy not available, using basic plot")
+
+try:
+    fig = plt.figure(figsize=(18, 14))
+
+    # ---- Top panel: Global residual map ----
+    if has_cartopy:
+        ax_map = fig.add_axes([0.05, 0.45, 0.9, 0.50], projection=ccrs.Robinson())
+        ax_map.set_global()
+        ax_map.coastlines(linewidth=0.5, color="gray")
+        ax_map.add_feature(cfeature.BORDERS, linewidth=0.3, edgecolor="gray")
+
+        vmax = 0.5
+        vmin = -0.5
+
+        if lats.ndim == 1 and lons.ndim == 1:
+            pcm = ax_map.pcolormesh(
+                lons, lats, res_vals,
+                transform=ccrs.PlateCarree(),
+                cmap="RdBu",
+                vmin=vmin, vmax=vmax,
+                shading="auto",
+            )
+        else:
+            pcm = ax_map.pcolormesh(
+                lon2d, lat2d, res_vals,
+                transform=ccrs.PlateCarree(),
+                cmap="RdBu",
+                vmin=vmin, vmax=vmax,
+                shading="auto",
+            )
+
+        # Add basin outlines
+        colors_basin = ["red", "blue", "green", "orange", "purple", "brown"]
+        for idx, (gid, bname) in enumerate(basin_info.items()):
+            if gid in basin_polygons:
+                poly = basin_polygons[gid]
+                color = colors_basin[idx % len(colors_basin)]
+                if poly.geom_type == "Polygon":
+                    polys = [poly]
+                elif poly.geom_type == "MultiPolygon":
+                    polys = list(poly.geoms)
+                else:
+                    polys = [poly] if hasattr(poly, 'exterior') else []
+
+                first = True
+                for p in polys:
+                    try:
+                        if hasattr(p, 'exterior'):
+                            coords = np.array(p.exterior.coords)
+                            ax_map.plot(
+                                coords[:, 0], coords[:, 1],
+                                transform=ccrs.PlateCarree(),
+                                color=color, linewidth=1.5,
+                                label=bname if first else None,
+                            )
+                            first = False
+                    except Exception as ex:
+                        print(f"    Warning plotting {bname} outline: {ex}")
+
+        cb = fig.colorbar(pcm, ax=ax_map, orientation="horizontal", pad=0.05,
+                          shrink=0.6, label="Residual (P - ET - Q) [mm/day]")
+        ax_map.set_title(
+            f"ELM Water Balance Residual (1985-1989 Climatology)\n"
+            f"Global Mean: P={P_global:.3f}, ET={ET_global:.3f}, Q={Q_global:.3f}, "
+            f"Residual={residual_global:.4f} mm/day",
+            fontsize=13,
+        )
+        ax_map.legend(loc="lower left", fontsize=8, framealpha=0.9)
+
+    else:
+        ax_map = fig.add_axes([0.05, 0.45, 0.9, 0.50])
+        pcm = ax_map.pcolormesh(lon2d, lat2d, res_vals, cmap="RdBu", vmin=-0.5, vmax=0.5)
+        fig.colorbar(pcm, ax=ax_map, label="Residual [mm/day]")
+        ax_map.set_title("ELM Water Balance Residual (1985-1989)")
+
+    # ---- Bottom panels: Per-basin bar charts ----
+    basin_names_ordered = [basin_info[gid] for gid in basin_info]
+    n_basins = len(basin_names_ordered)
+
+    for idx, bname in enumerate(basin_names_ordered):
+        ax_bar = fig.add_axes([
+            0.06 + idx * 0.155,
+            0.05,
+            0.13,
+            0.30,
+        ])
+
+        stats = basin_stats.get(bname, {"P": np.nan, "ET": np.nan, "Q": np.nan, "Residual": np.nan})
+        vals = [stats["P"], stats["ET"], stats["Q"], stats["Residual"]]
+        labels = ["P", "ET", "Q", "Res"]
+        colors_bar = ["#2166ac", "#4daf4a", "#984ea3", "#e41a1c"]
+
+        bars = ax_bar.bar(labels, vals, color=colors_bar, edgecolor="black", linewidth=0.5)
+
+        ax_bar.axhline(0, color="black", linewidth=0.5)
+        ax_bar.set_title(bname, fontsize=10, fontweight="bold")
+        ax_bar.set_ylabel("mm/day" if idx == 0 else "", fontsize=9)
+        ax_bar.tick_params(axis="both", labelsize=8)
+
+        for bar_obj, val in zip(bars, vals):
+            if not np.isnan(val):
+                ypos = val + 0.05 if val >= 0 else val - 0.15
+                ax_bar.text(
+                    bar_obj.get_x() + bar_obj.get_width() / 2,
+                    ypos,
+                    f"{val:.3f}",
+                    ha="center", va="bottom" if val >= 0 else "top",
+                    fontsize=7,
+                )
+
+    fig_path = os.path.join(output_dir, "water_balance_composite.png")
+    fig.savefig(fig_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved {fig_path}")
+
+except Exception as e:
+    print(f"  Error creating figure: {e}")
+    import traceback; traceback.print_exc()
+
+# -------------------------------------------------------
+# 10. Summary
+# -------------------------------------------------------
+print("\n" + "=" * 60)
+print("WATER BALANCE SUMMARY (1985-1989 Climatology)")
+print("=" * 60)
+print(f"  {'Component':<30s} {'Global Mean (mm/day)':>20s}")
+print(f"  {'-'*50}")
+print(f"  {'P  (RAIN+SNOW)':<30s} {P_global:>20.4f}")
+print(f"  {'ET (QVEGE+QVEGT+QSOIL)':<30s} {ET_global:>20.4f}")
+print(f"  {'Q  (QRUNOFF)':<30s} {Q_global:>20.4f}")
+print(f"  {'Residual (P-ET-Q)':<30s} {residual_global:>20.4f}")
+print(f"  {'Residual/P (%)':<30s} {100*residual_global/P_global if P_global != 0 else np.nan:>20.2f}")
+print()
+print("Per-Basin Statistics (mm/day):")
+print(f"  {'Basin':<15s} {'P':>8s} {'ET':>8s} {'Q':>8s} {'Residual':>10s} {'Res/P(%)':>10s}")
+print(f"  {'-'*60}")
+for bname, stats in basin_stats.items():
+    p_val = stats["P"]
+    res_val = stats["Residual"]
+    pct = 100 * res_val / p_val if p_val != 0 and not np.isnan(p_val) else np.nan
+    print(f"  {bname:<15s} {stats['P']:>8.3f} {stats['ET']:>8.3f} {stats['Q']:>8.3f} {stats['Residual']:>10.4f} {pct:>10.2f}")
+
+print(f"\nOutput saved to: {output_dir}")
+print("Done.")

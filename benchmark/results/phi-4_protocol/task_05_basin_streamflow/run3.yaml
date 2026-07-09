@@ -1,0 +1,83 @@
+name: Basin-Scale Streamflow Analysis
+description: 'Perform a basin-scale streamflow analysis for six major river basins
+  over the period 1985-1989.
+
+  Match gauges to the model grid, extract simulated and observed discharge, compute
+  validation metrics,
+
+  and produce per-basin figures.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_05_basin_streamflow/run3_output
+  style: cream_ink
+  years:
+  - 1985
+  - 1986
+  - 1987
+  - 1988
+  - 1989
+  basins_file: ./data/sample/obs/basin_polygons.geojson
+  gauge_metadata: ./data/sample/obs/gauge_metadata.csv
+  obs_dir: ./data/sample/obs/streamflow/
+  component: mosart
+  variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+steps:
+- id: load_gauge_metadata
+  tool: load_obs_metadata
+  params:
+    metadata_file: ${settings.gauge_metadata}
+  outputs:
+    metadata_file: gauge_metadata_validated.csv
+    n_gauges: n_gauges_count
+- id: match_gauges_to_grid
+  tool: match_to_grid
+  params:
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+  outputs:
+    matched_file: matched_gauges.csv
+    n_matched: n_matched_count
+- id: extract_simulated_timeseries
+  tool: extract_e3sm_timeseries
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: ${settings.component}
+    variable: ${settings.variable}
+    locations_file: ${match_gauges_to_grid.outputs.matched_file}
+    years: ${settings.years}
+  outputs:
+    timeseries_file: simulated_discharge.csv
+    n_locations: n_simulated_locations
+- id: extract_observed_timeseries
+  tool: extract_obs_timeseries
+  params:
+    obs_dir: ${settings.obs_dir}
+    gauge_metadata: ${load_gauge_metadata.outputs.metadata_file}
+    years: ${settings.years}
+  outputs:
+    timeseries_file: observed_discharge.csv
+    n_gauges: n_observed_gauges
+- id: compute_validation_metrics
+  tool: compute_metrics
+  params:
+    sim_file: ${extract_simulated_timeseries.outputs.timeseries_file}
+    obs_file: ${extract_observed_timeseries.outputs.timeseries_file}
+  outputs:
+    metrics_file: validation_metrics.csv
+    n_gauges: n_validated_gauges
+- id: plot_basin_discharge
+  tool: plot_basin_timeseries
+  params:
+    basins_file: ${settings.basins_file}
+    sim_file: ${extract_simulated_timeseries.outputs.timeseries_file}
+    obs_file: ${extract_observed_timeseries.outputs.timeseries_file}
+    locations_file: ${load_gauge_metadata.outputs.metadata_file}
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    plot_files: basin_discharge_plots.png

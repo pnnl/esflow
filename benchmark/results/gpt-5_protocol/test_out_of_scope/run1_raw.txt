@@ -1,0 +1,60 @@
+name: "ENSO 3.4 Index (Not Fully Supported by Current Tool Catalog)"
+description: |
+  Objective: Compute the ENSO 3.4 index from monthly SST in ./data/sample/model/sst_monthly.nc
+  for 1985–1989 by extracting the Nino 3.4 region (5°S–5°N, 170°W–120°W), computing
+  area-weighted monthly means, removing the climatological seasonal cycle to obtain anomalies,
+  applying a 3-month running mean, saving the index as CSV, and plotting it.
+
+  Limitation: The current ESMFlow v3 tool catalog does not include a tool to:
+  - Extract a longitude/latitude-bounded box time series from a gridded NetCDF,
+  - Compute anomalies by removing the monthly climatology from a time series,
+  - Apply a 3-month running mean,
+  - Plot a single time series.
+
+  This workflow provides a partial stopgap:
+  - It computes the 1985–1989 time-mean SST field from the provided NetCDF,
+  - Computes an equatorial (-5° to 5°) band mean (note: this averages all longitudes, not 170°W–120°W),
+  - Plots the time-mean SST map and overlays the equatorial band mean as annotation.
+
+  To fully achieve the requested ENSO 3.4 index computation in ESMFlow, additional tools would be needed,
+  such as: extract_box_timeseries (lon/lat box mean through time), compute_anomalies (remove monthly climatology),
+  running_mean (3-month filter), and plot_single_timeseries.
+
+settings:
+  case_name: "enso34_partial"
+  data_dir: "./data/sample/model"
+  output_dir: "./output/test_enso"
+  style: cream_ink
+
+steps:
+  - id: extract_sst_mean_1985_1989
+    tool: extract_gridded_field
+    params:
+      obs_file: "${settings.data_dir}/sst_monthly.nc"
+      variable: "sst"
+      years:
+        - 1985
+        - 1986
+        - 1987
+        - 1988
+        - 1989
+    outputs:
+      field_file: "sst_mean_1985_1989.nc"
+
+  - id: compute_equatorial_band_mean
+    tool: compute_zonal_stats
+    params:
+      field_file: "${extract_sst_mean_1985_1989.outputs.field_file}"
+      lat_bands: "nino34_equatorial:-5:5"
+    outputs:
+      stats_file: "equatorial_band_mean_1985_1989.csv"
+
+  - id: plot_sst_mean_map
+    tool: plot_gridded_map
+    params:
+      field_file: "${extract_sst_mean_1985_1989.outputs.field_file}"
+      title: "SST Mean (1985–1989)"
+      units: "degC"
+      stats_file: "${compute_equatorial_band_mean.outputs.stats_file}"
+    outputs:
+      plot_file: "sst_mean_1985_1989_map.png"

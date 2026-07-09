@@ -1,0 +1,62 @@
+name: ET Benchmark vs MODIS 1985-1989
+description: 'Benchmark E3SM-ELM evapotranspiration against MODIS satellite observations
+  using 5-year climatology from 1985-1989.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/o4-mini_protocol/task_03_et_benchmark/run2_output
+  style: cream_ink
+steps:
+- id: fetch_modis_et
+  tool: fetch_ilamb_data
+  params:
+    variable: evspsbl
+    dataset: MODIS
+  outputs:
+    data_file: modis_evspsbl_MODIS.nc
+- id: extract_model_et
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QVEGE+QVEGT+QSOIL
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: model_et_clim_1985_1989.nc
+- id: extract_obs_et
+  tool: extract_gridded_field
+  params:
+    obs_file: ${fetch_modis_et.outputs.data_file}
+    variable: et
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: obs_et_clim_1985_1989.nc
+- id: compute_et_spatial_bias
+  tool: compute_spatial_bias
+  params:
+    field_a: ${extract_model_et.outputs.field_file}
+    field_b: ${extract_obs_et.outputs.field_file}
+  outputs:
+    bias_file: et_bias_1985_1989.nc
+    stats_file: et_bias_stats_1985_1989.csv
+- id: plot_et_bias_map
+  tool: plot_gridded_map
+  params:
+    field_file: ${compute_et_spatial_bias.outputs.bias_file}
+    title: ET Bias (ELM - MODIS) 1985-1989
+    stats_file: ${compute_et_spatial_bias.outputs.stats_file}
+  outputs:
+    plot_file: et_bias_map_1985_1989.png

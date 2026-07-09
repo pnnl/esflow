@@ -1,0 +1,40 @@
+name: "Task 01 Observational Streamflow Summary"
+description: |
+  Load GRDC gauge metadata, extract monthly streamflow observations for six specified gauges from 1985–1989, and compute summary statistics (mean, std, min, max). Outputs a CSV summary.
+
+settings:
+  case_name: "task01_obs"
+  data_dir: "./data"
+  output_dir: "./output/task01_obs_summary"
+  style: cream_ink
+
+steps:
+  - id: load_grdc_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "./data/sample/obs/gauge_metadata.csv"
+    outputs:
+      metadata_file: validated_gauge_metadata.csv
+      n_gauges: n_gauges.txt
+
+  - id: extract_obs_streamflow
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "./data/sample/obs/streamflow"
+      gauge_metadata: "${load_grdc_metadata.outputs.metadata_file}"
+      years: [1985, 1986, 1987, 1988, 1989]
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+    outputs:
+      timeseries_file: obs_streamflow_1985_1989.csv
+      n_gauges: n_obs_gauges.txt
+
+  - id: compute_obs_summary_stats
+    tool: compute_summary_stats
+    params:
+      timeseries_file: "${extract_obs_streamflow.outputs.timeseries_file}"
+      gauge_metadata: "${load_grdc_metadata.outputs.metadata_file}"
+      top_n: 0
+      rank_by: mean
+    outputs:
+      stats_file: obs_streamflow_summary_1985_1989.csv
+      n_columns: n_columns.txt

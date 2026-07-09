@@ -1,0 +1,470 @@
+#!/usr/bin/env python
+"""
+Basin-scale streamflow analysis for E3SM MOSART output.
+Compares simulated discharge with observations for six major river basins (1985-1989).
+"""
+
+import os
+import sys
+import warnings
+import numpy as np
+import pandas as pd
+import xarray as xr
+import json
+from datetime import datetime
+from pathlib import Path
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.dates import DateFormatter
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+warnings.filterwarnings('ignore')
+
+# Configuration
+E3SM_DIR = "./data/sample/e3sm/"
+OBS_DIR = "./data/sample/obs/"
+CASE_NAME = "sample.v3.LR.historical"
+OUTPUT_DIR = "/Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/claude-haiku-4-5-20251001_baseline/task_05_basin_streamflow/run4_debug/v3/output"
+START_YEAR = 1985
+END_YEAR = 1989
+
+# Basin information: (gauge_id, river_name)
+BASINS = {
+    3629000: "Amazon",
+    4121801: "Missouri",
+    4115200: "Columbia",
+    6742900: "Danube",
+    2969100: "Mekong",
+    1159100: "Orange"
+}
+
+def create_output_dir():
+    """Create output directory if it doesn't exist."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Output directory: {OUTPUT_DIR}")
+
+def load_gauge_metadata():
+    """Load gauge metadata from CSV."""
+    try:
+        metadata_file = os.path.join(OBS_DIR, "gauge_metadata.csv")
+        df = pd.read_csv(metadata_file)
+        print(f"Loaded gauge metadata: {len(df)} gauges")
+        return df
+    except Exception as e:
+        print(f"Error loading gauge metadata: {e}")
+        return None
+
+def load_basin_polygons():
+    """Load basin polygons from GeoJSON."""
+    try:
+        geojson_file = os.path.join(OBS_DIR, "basin_polygons.geojson")
+        with open(geojson_file, 'r') as f:
+            geojson_data = json.load(f)
+        print(f"Loaded basin polygons: {len(geojson_data['features'])} features")
+        return geojson_data
+    except Exception as e:
+        print(f"Error loading basin polygons: {e}")
+        return None
+
+def load_observation_data(gauge_id):
+    """Load observation streamflow data for a gauge."""
+    try:
+        obs_file = os.path.join(OBS_DIR, "streamflow", f"{gauge_id}.csv")
+        df = pd.read_csv(obs_file)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        return df
+    except Exception as e:
+        print(f"Error loading observation data for gauge {gauge_id}: {e}")
+        return None
+
+def load_mosart_monthly_data(year, month):
+    """Load MOSART monthly h0 data."""
+    try:
+        month_str = f"{year:04d}-{month:02d}"
+        mosart_file = os.path.join(
+            E3SM_DIR, "rof",
+            f"{CASE_NAME}.mosart.h0.{month_str}.nc"
+        )
+        if not os.path.exists(mosart_file):
+            return None
+        ds = xr.open_dataset(mosart_file)
+        return ds
+    except Exception as e:
+        print(f"Error loading MOSART data for {year}-{month:02d}: {e}")
+        return None
+
+def cftime_to_datetime(cftime_obj):
+    """Convert cftime object to pandas Timestamp."""
+    try:
+        return pd.Timestamp(year=cftime_obj.year, month=cftime_obj.month, day=cftime_obj.day)
+    except Exception as e:
+        return None
+
+def find_nearest_grid_cell(lat, lon, grid_lats, grid_lons):
+    """Find nearest grid cell to a given lat/lon point."""
+    try:
+        # Create 2D meshgrid if needed
+        if grid_lats.ndim == 1 and grid_lons.ndim == 1:
+            lons_2d, lats_2d = np.meshgrid(grid_lons, grid_lats)
+        else:
+            lats_2d = grid_lats
+            lons_2d = grid_lons
+        
+        # Calculate distances
+        distances = np.sqrt((lats_2d - lat) ** 2 + (lons_2d - lon) ** 2)
+        
+        # Find minimum distance index
+        grid_idx = np.unravel_index(np.argmin(distances), distances.shape)
+        
+        return grid_idx
+    except Exception as e:
+        print(f"Error finding nearest grid cell: {e}")
+        return None
+
+def extract_discharge_timeseries(gauge_id, gauge_lat, gauge_lon):
+    """Extract simulated discharge timeseries from MOSART for a gauge."""
+    discharge_data = []
+    dates = []
+    
+    try:
+        # Load first month to get grid info
+        ds_first = load_mosart_monthly_data(START_YEAR, 1)
+        if ds_first is None:
+            print(f"Could not load MOSART data for {START_YEAR}-01")
+            return None, None
+        
+        grid_lats = ds_first['lat'].values
+        grid_lons = ds_first['lon'].values
+        grid_idx = find_nearest_grid_cell(gauge_lat, gauge_lon, grid_lats, grid_lons)
+        
+        if grid_idx is None:
+            print(f"Could not find grid cell for gauge {gauge_id}")
+            return None, None
+        
+        print(f"Found grid cell at indices {grid_idx} for gauge {gauge_id}")
+        
+        ds_first.close()
+        
+        # Extract discharge for each month
+        for year in range(START_YEAR, END_YEAR + 1):
+            for month in range(1, 13):
+                ds = load_mosart_monthly_data(year, month)
+                if ds is None:
+                    continue
+                
+                try:
+                    # Get discharge at nearest grid cell
+                    discharge_var = ds['RIVER_DISCHARGE_OVER_LAND_LIQ']
+                    
+                    # Handle different dimension orders
+                    if 'lat' in discharge_var.dims and 'lon' in discharge_var.dims:
+                        discharge = discharge_var.isel(
+                            lat=grid_idx[0], lon=grid_idx[1]
+                        ).values
+                    else:
+                        # Try alternative indexing
+                        discharge = discharge_var.values
+                        if discharge.ndim > 1:
+                            discharge = discharge[grid_idx[0], grid_idx[1]]
+                    
+                    # Get time coordinate
+                    if 'time' in ds.dims:
+                        time_vals = ds['time'].values
+                        if hasattr(time_vals, '__len__'):
+                            for t, q in zip(time_vals, discharge if hasattr(discharge, '__len__') else [discharge]):
+                                # Handle cftime objects
+                                try:
+                                    ts = pd.Timestamp(t)
+                                except:
+                                    ts = cftime_to_datetime(t)
+                                
+                                if ts is not None:
+                                    dates.append(ts)
+                                    discharge_data.append(float(q))
+                        else:
+                            # Single time value
+                            try:
+                                ts = pd.Timestamp(time_vals)
+                            except:
+                                ts = cftime_to_datetime(time_vals)
+                            
+                            if ts is not None:
+                                dates.append(ts)
+                                discharge_data.append(float(discharge))
+                    else:
+                        # Use year-month as date
+                        dates.append(pd.Timestamp(f"{year:04d}-{month:02d}-15"))
+                        if hasattr(discharge, '__len__'):
+                            discharge_data.append(float(np.mean(discharge)))
+                        else:
+                            discharge_data.append(float(discharge))
+                    
+                except Exception as e:
+                    print(f"Error extracting discharge for {year}-{month:02d}: {e}")
+                
+                ds.close()
+        
+        if len(discharge_data) == 0:
+            return None, None
+        
+        df = pd.DataFrame({
+            'date': dates,
+            'discharge_sim': discharge_data
+        }).sort_values('date')
+        
+        return df, grid_idx
+    
+    except Exception as e:
+        print(f"Error in extract_discharge_timeseries: {e}")
+        return None, None
+
+def compute_metrics(obs_discharge, sim_discharge):
+    """Compute validation metrics between observed and simulated discharge."""
+    try:
+        # Remove NaN values
+        valid_idx = ~(np.isnan(obs_discharge) | np.isnan(sim_discharge))
+        obs = obs_discharge[valid_idx]
+        sim = sim_discharge[valid_idx]
+        
+        if len(obs) == 0:
+            return None
+        
+        # RMSE
+        rmse = np.sqrt(np.mean((sim - obs) ** 2))
+        
+        # NSE (Nash-Sutcliffe Efficiency)
+        obs_mean = np.mean(obs)
+        ss_res = np.sum((obs - sim) ** 2)
+        ss_tot = np.sum((obs - obs_mean) ** 2)
+        nse = 1 - (ss_res / ss_tot) if ss_tot > 0 else np.nan
+        
+        # KGE (Kling-Gupta Efficiency)
+        r = np.corrcoef(obs, sim)[0, 1]
+        alpha = np.std(sim) / np.std(obs) if np.std(obs) > 0 else 0
+        beta = np.mean(sim) / np.mean(obs) if np.mean(obs) > 0 else 0
+        kge = 1 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+        
+        # PBIAS (Percent Bias)
+        pbias = 100 * np.sum(sim - obs) / np.sum(obs) if np.sum(obs) > 0 else 0
+        
+        return {
+            'rmse': rmse,
+            'nse': nse,
+            'kge': kge,
+            'pbias': pbias,
+            'n_samples': len(obs)
+        }
+    
+    except Exception as e:
+        print(f"Error computing metrics: {e}")
+        return None
+
+def get_basin_polygon(gauge_id, basin_polygons):
+    """Get basin polygon for a gauge."""
+    try:
+        for feature in basin_polygons['features']:
+            if feature['properties'].get('grdc_no') == gauge_id:
+                return feature['geometry']
+        return None
+    except Exception as e:
+        print(f"Error getting basin polygon: {e}")
+        return None
+
+def plot_basin_analysis(gauge_id, basin_name, gauge_lat, gauge_lon, 
+                       obs_df, sim_df, basin_polygon, metrics):
+    """Create figure with basin map and discharge timeseries."""
+    try:
+        fig = plt.figure(figsize=(16, 10))
+        
+        # Map subplot
+        ax_map = plt.subplot(2, 1, 1, projection=ccrs.PlateCarree())
+        ax_map.set_extent([gauge_lon - 15, gauge_lon + 15, 
+                          gauge_lat - 15, gauge_lat + 15], 
+                         crs=ccrs.PlateCarree())
+        
+        # Add map features
+        ax_map.add_feature(cfeature.LAND, facecolor='lightgray')
+        ax_map.add_feature(cfeature.OCEAN, facecolor='lightblue')
+        ax_map.add_feature(cfeature.COASTLINE)
+        ax_map.add_feature(cfeature.BORDERS, linestyle=':')
+        ax_map.gridlines(draw_labels=True, alpha=0.3)
+        
+        # Plot basin polygon
+        if basin_polygon is not None:
+            try:
+                if basin_polygon['type'] == 'Polygon':
+                    coords = np.array(basin_polygon['coordinates'][0])
+                    ax_map.plot(coords[:, 0], coords[:, 1], 'b-', linewidth=2, 
+                               label='Basin boundary', transform=ccrs.PlateCarree())
+                    ax_map.fill(coords[:, 0], coords[:, 1], alpha=0.2, 
+                               color='blue', transform=ccrs.PlateCarree())
+            except Exception as e:
+                print(f"Error plotting basin polygon: {e}")
+        
+        # Plot gauge location
+        ax_map.plot(gauge_lon, gauge_lat, 'r*', markersize=20, 
+                   label='Gauge location', transform=ccrs.PlateCarree())
+        
+        ax_map.set_title(f'{basin_name} Basin (Gauge ID: {gauge_id})', fontsize=14, fontweight='bold')
+        ax_map.legend(loc='upper left')
+        
+        # Timeseries subplot
+        ax_ts = plt.subplot(2, 1, 2)
+        
+        # Merge obs and sim data
+        merged_df = obs_df.merge(sim_df, on='date', how='outer').sort_values('date')
+        
+        # Plot timeseries
+        ax_ts.plot(merged_df['date'], merged_df['discharge_m3s'], 'b-', 
+                  linewidth=1.5, label='Observed', alpha=0.8)
+        ax_ts.plot(merged_df['date'], merged_df['discharge_sim'], 'r--', 
+                  linewidth=1.5, label='Simulated', alpha=0.8)
+        
+        ax_ts.set_xlabel('Date', fontsize=11)
+        ax_ts.set_ylabel('Discharge (m³/s)', fontsize=11)
+        ax_ts.set_title('Streamflow Comparison (1985-1989)', fontsize=12, fontweight='bold')
+        ax_ts.legend(loc='upper left', fontsize=10)
+        ax_ts.grid(True, alpha=0.3)
+        ax_ts.xaxis.set_major_formatter(DateFormatter('%Y-%m'))
+        plt.setp(ax_ts.xaxis.get_majorticklabels(), rotation=45)
+        
+        # Add metrics text
+        if metrics is not None:
+            metrics_text = (
+                f"RMSE: {metrics['rmse']:.2f} m³/s\n"
+                f"NSE: {metrics['nse']:.3f}\n"
+                f"KGE: {metrics['kge']:.3f}\n"
+                f"PBIAS: {metrics['pbias']:.1f}%\n"
+                f"N: {metrics['n_samples']}"
+            )
+            ax_ts.text(0.02, 0.98, metrics_text, transform=ax_ts.transAxes,
+                      fontsize=10, verticalalignment='top',
+                      bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        # Save figure
+        output_file = os.path.join(OUTPUT_DIR, f"basin_{gauge_id}_{basin_name}.png")
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        print(f"Saved figure: {output_file}")
+        plt.close()
+        
+    except Exception as e:
+        print(f"Error creating plot for basin {basin_name}: {e}")
+        plt.close()
+
+def main():
+    """Main analysis function."""
+    print("=" * 80)
+    print("Basin-Scale Streamflow Analysis for E3SM MOSART (1985-1989)")
+    print("=" * 80)
+    
+    create_output_dir()
+    
+    # Load metadata and polygons
+    gauge_metadata = load_gauge_metadata()
+    basin_polygons = load_basin_polygons()
+    
+    if gauge_metadata is None or basin_polygons is None:
+        print("Error: Could not load required data files")
+        return
+    
+    # Results storage
+    results = []
+    
+    # Process each basin
+    for gauge_id, basin_name in BASINS.items():
+        print(f"\n{'='*60}")
+        print(f"Processing {basin_name} Basin (Gauge ID: {gauge_id})")
+        print(f"{'='*60}")
+        
+        # Get gauge metadata
+        gauge_row = gauge_metadata[gauge_metadata['gauge_id'] == gauge_id]
+        if len(gauge_row) == 0:
+            print(f"Warning: Gauge {gauge_id} not found in metadata")
+            continue
+        
+        gauge_lat = gauge_row['lat'].values[0]
+        gauge_lon = gauge_row['lon'].values[0]
+        area_km2 = gauge_row['area_km2'].values[0]
+        
+        print(f"Gauge location: ({gauge_lat:.2f}°N, {gauge_lon:.2f}°E)")
+        print(f"Basin area: {area_km2:.0f} km²")
+        
+        # Load observation data
+        obs_df = load_observation_data(gauge_id)
+        if obs_df is None or len(obs_df) == 0:
+            print(f"Warning: No observation data for gauge {gauge_id}")
+            continue
+        
+        # Filter to analysis period
+        obs_df = obs_df[(obs_df['date'] >= f"{START_YEAR}-01-01") & 
+                       (obs_df['date'] <= f"{END_YEAR}-12-31")]
+        print(f"Observation data: {len(obs_df)} records")
+        
+        # Extract simulated discharge
+        sim_df, grid_idx = extract_discharge_timeseries(gauge_id, gauge_lat, gauge_lon)
+        if sim_df is None or len(sim_df) == 0:
+            print(f"Warning: Could not extract simulated discharge for gauge {gauge_id}")
+            continue
+        
+        print(f"Simulated data: {len(sim_df)} records")
+        
+        # Merge datasets
+        merged_df = obs_df.merge(sim_df, on='date', how='inner').sort_values('date')
+        print(f"Merged data: {len(merged_df)} records")
+        
+        if len(merged_df) == 0:
+            print(f"Warning: No overlapping data for gauge {gauge_id}")
+            continue
+        
+        # Compute metrics
+        metrics = compute_metrics(
+            merged_df['discharge_m3s'].values,
+            merged_df['discharge_sim'].values
+        )
+        
+        if metrics is not None:
+            print(f"Metrics:")
+            print(f"  RMSE: {metrics['rmse']:.2f} m³/s")
+            print(f"  NSE: {metrics['nse']:.3f}")
+            print(f"  KGE: {metrics['kge']:.3f}")
+            print(f"  PBIAS: {metrics['pbias']:.1f}%")
+            
+            results.append({
+                'gauge_id': gauge_id,
+                'basin_name': basin_name,
+                'lat': gauge_lat,
+                'lon': gauge_lon,
+                'area_km2': area_km2,
+                'rmse': metrics['rmse'],
+                'nse': metrics['nse'],
+                'kge': metrics['kge'],
+                'pbias': metrics['pbias'],
+                'n_samples': metrics['n_samples']
+            })
+        
+        # Get basin polygon
+        basin_polygon = get_basin_polygon(gauge_id, basin_polygons)
+        
+        # Create figure
+        plot_basin_analysis(gauge_id, basin_name, gauge_lat, gauge_lon,
+                          obs_df, sim_df, basin_polygon, metrics)
+    
+    # Save results summary
+    if len(results) > 0:
+        results_df = pd.DataFrame(results)
+        results_file = os.path.join(OUTPUT_DIR, "basin_metrics_summary.csv")
+        results_df.to_csv(results_file, index=False)
+        print(f"\nSaved results summary: {results_file}")
+        print("\nResults Summary:")
+        print(results_df.to_string(index=False))
+    
+    print("\n" + "=" * 80)
+    print("Analysis complete!")
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

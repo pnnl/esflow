@@ -1,0 +1,117 @@
+name: E3SM Land Model Water Balance Closure
+description: 'This workflow checks the E3SM land model water balance closure using
+  monthly ELM output for the period 1985-1989.
+
+  It extracts climatological time-mean fields for precipitation, evapotranspiration,
+  and runoff,
+
+  computes a global residual field, clips these to major basins, and produces a composite
+  figure.
+
+  '
+settings:
+  case_name: sample.v3.LR.historical
+  data_dir: ./data/sample/e3sm/
+  output_dir: /Users/zhou014/Local_Drive/Git_repo/esmflow/benchmark/results/phi-4_protocol/task_06_water_balance/run3_debug/v2/output
+  style: cream_ink
+steps:
+- id: extract_precipitation
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: RAIN+SNOW
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: ${output_dir}/precipitation.nc
+- id: extract_evapotranspiration
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QVEGE+QVEGT+QSOIL
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: ${output_dir}/evapotranspiration.nc
+- id: extract_runoff
+  tool: extract_gridded_field
+  params:
+    data_dir: ${settings.data_dir}
+    case_name: ${settings.case_name}
+    component: elm
+    variable: QRUNOFF
+    years:
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+  outputs:
+    field_file: ${output_dir}/runoff.nc
+- id: compute_residual
+  tool: compute_spatial_bias
+  params:
+    field_a: ${extract_precipitation.outputs.field_file}
+    field_b:
+    - ${extract_evapotranspiration.outputs.field_file}
+    - ${extract_runoff.outputs.field_file}
+  outputs:
+    bias_file: ${output_dir}/residual.nc
+    stats_file: ${output_dir}/residual_stats.csv
+- id: clip_to_basins_precipitation
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_precipitation.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: ${output_dir}/precipitation_basins.csv
+- id: clip_to_basins_evapotranspiration
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_evapotranspiration.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: ${output_dir}/evapotranspiration_basins.csv
+- id: clip_to_basins_runoff
+  tool: extract_basin_mean
+  params:
+    field_file: ${extract_runoff.outputs.field_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: ${output_dir}/runoff_basins.csv
+- id: clip_to_basins_residual
+  tool: extract_basin_mean
+  params:
+    field_file: ${compute_residual.outputs.bias_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+  outputs:
+    basin_means_file: ${output_dir}/residual_basins.csv
+- id: plot_water_balance
+  tool: plot_water_balance_basins
+  params:
+    residual_file: ${compute_residual.outputs.bias_file}
+    basin_precip_file: ${clip_to_basins_precipitation.outputs.basin_means_file}
+    basin_et_file: ${clip_to_basins_evapotranspiration.outputs.basin_means_file}
+    basin_runoff_file: ${clip_to_basins_runoff.outputs.basin_means_file}
+    basin_residual_file: ${clip_to_basins_residual.outputs.basin_means_file}
+    basins_file: ./data/sample/obs/basin_polygons.geojson
+    gauge_ids: 3629000,4121801,4115200,6742900,2969100,1159100
+    locations_file: ./data/sample/obs/gauge_metadata.csv
+  outputs:
+    plot_file: ${output_dir}/water_balance.png
