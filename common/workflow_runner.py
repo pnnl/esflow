@@ -239,7 +239,7 @@ def run_workflow_definition(
         catalog = yaml.safe_load(f)
 
     settings = workflow.get('settings', {})
-    output_dir = Path(settings.get('output_dir', './outputs'))
+    output_dir = Path(settings.get('output_dir', './output'))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     context = {

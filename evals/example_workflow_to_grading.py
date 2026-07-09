@@ -13,9 +13,12 @@ Usage:
     python evals/example_workflow_to_grading.py
 """
 
+import asyncio
 from pathlib import Path
 from common.workflow_runner import run_workflow_definition
+from common.workflow import Settings
 from evals.structural_grading_dataset import make_dataset
+from agents.planner.oneshot_planner import plan_workflow_one_shot
 
 
 # ===========================================================================
@@ -23,18 +26,16 @@ from evals.structural_grading_dataset import make_dataset
 # ===========================================================================
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
-MODEL = "test-model"
-MODE = "protocol"
+MODEL = "Gemini 3.5 Flash"
 TASKS = [
     "task_01_obs_summary",
-    "task_02_seasonal_runoff",
-    "task_03_et_benchmark",
-    "task_04_streamflow_fdc",
-    "task_05_basin_streamflow",
-    "task_06_water_balance",
-    "task_07_integrated_diagnostic",
+    # "task_02_seasonal_runoff",
+    # "task_03_et_benchmark",
+    # "task_04_streamflow_fdc",
+    # "task_05_basin_streamflow",
+    # "task_06_water_balance",
+    # "task_07_integrated_diagnostic",
 ]
-NUM_RUNS = 2  # Run 1 and 2
 
 
 # ===========================================================================
@@ -43,66 +44,55 @@ NUM_RUNS = 2  # Run 1 and 2
 
 def run_workflows():
     """
-    Execute workflows for all tasks and runs, storing outputs in the
-    expected directory structure.
+    Execute workflows for all tasks by reading prompts and using the oneshot planner.
 
-    In a real scenario, you would:
-      1. Read task descriptions from evals/*.txt
-      2. Generate workflows (using planner agents)
-      3. Execute each workflow
-      4. Move outputs to RESULTS_DIR
+    For each task:
+      1. Read the task prompt from evals/protocol_prompts/{task}.txt
+      2. Use the oneshot planner to generate a workflow
+      3. Execute the workflow
+      4. Store outputs in the expected directory structure
     """
     print("=" * 70)
     print("STEP 1: Running workflows")
     print("=" * 70)
 
     for task in TASKS:
-        for run_num in range(1, NUM_RUNS + 1):
-            run_label = f"{MODEL}/{task}/run{run_num}"
-            output_path = (
-                RESULTS_DIR / f"{MODEL}_{MODE}" / task / f"run{run_num}_output"
+        run_label = f"{MODEL}/{task}/run1"
+        output_path = (
+            RESULTS_DIR / f"{MODEL}_protocol" / task / "run1_output"
+        )
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n[{run_label}]")
+
+        # Read task prompt
+        prompt_file = Path(__file__).resolve().parent / "protocol_prompts" / f"{task}.txt"
+        try:
+            with open(prompt_file) as f:
+                user_goal = f.read()
+        except FileNotFoundError:
+            print(f"  ✗ Prompt file not found: {prompt_file}")
+            continue
+
+        # Use oneshot planner to generate workflow
+        settings = Settings(output_dir=str(output_path))
+        try:
+            workflow = asyncio.run(plan_workflow_one_shot(user_goal, settings))
+            print(f"  ✓ Workflow generated with {len(workflow.steps)} steps")
+        except Exception as e:
+            print(f"  ✗ Planning failed: {e}")
+            continue
+
+        # Execute the workflow
+        try:
+            context = run_workflow_definition(
+                workflow,
+                workflow_path=f"<planner>:{run_label}",
+                verbose=False,
             )
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            print(f"\n[{run_label}]")
-
-            # ---------------------------------------------------------------
-            # In this example, we create a dummy workflow that just outputs
-            # a placeholder file. In reality, you would:
-            #   1. Read the task description
-            #   2. Use a planner agent to generate a workflow
-            #   3. Call run_workflow_definition() with that workflow
-            # ---------------------------------------------------------------
-
-            workflow = {
-                "name": f"dummy_{task}_run{run_num}",
-                "settings": {
-                    "output_dir": str(output_path),
-                },
-                "steps": [
-                    {
-                        "id": "dummy_step",
-                        "tool": "compute_summary_stats",  # This must exist in tool_catalog.yaml
-                        "params": {
-                            "output_dir": str(output_path),
-                        },
-                        "outputs": {
-                            "stats": "summary.csv",  # Task 01 expects CSV
-                        },
-                    }
-                ],
-            }
-
-            try:
-                context = run_workflow_definition(
-                    workflow,
-                    workflow_path=f"<memory>:{run_label}",
-                    verbose=False,
-                )
-                print(f"  ✓ Outputs saved to {output_path}")
-            except Exception as e:
-                print(f"  ✗ Failed: {e}")
-                # In a real scenario, decide whether to continue or abort
+            print(f"  ✓ Outputs saved to {output_path}")
+        except Exception as e:
+            print(f"  ✗ Execution failed: {e}")
 
 
 # ===========================================================================
@@ -113,28 +103,22 @@ def create_grading_dataset():
     """
     Build a pydantic-evals Dataset for the runs we just executed.
 
-    The Dataset will contain one Case per (model, task, run) triple,
-    each wired with a StructuralGrade evaluator that knows which
-    reference files to compare against.
+    A unique ID is generated automatically by make_dataset(),
+    so repeated evaluations won't collide even with the same dataset.
     """
     print("\n" + "=" * 70)
     print("STEP 2: Creating structural grading Dataset")
     print("=" * 70)
 
-    # Create a subset dataset for just our model and tasks
     dataset = make_dataset(
-        mode=MODE,
         results_dir=RESULTS_DIR,
         models=[MODEL],
         tasks=TASKS,
-        runs=list(range(1, NUM_RUNS + 1)),
     )
 
-    print(f"\n✓ Created Dataset with {len(dataset.cases)} cases")
-    print(f"  Mode: {MODE}")
+    print(f"\n✓ Created dataset with {len(dataset.cases)} cases")
     print(f"  Model: {MODEL}")
     print(f"  Tasks: {len(TASKS)}")
-    print(f"  Runs: {NUM_RUNS}")
 
     return dataset
 
@@ -143,14 +127,18 @@ def create_grading_dataset():
 # Step 3: Run evaluation
 # ===========================================================================
 
-def evaluate_dataset(dataset):
+def evaluate_dataset(dataset, repeat: int = 2):
     """
-    Execute the evaluation, passing each case to our get_output_dir function.
+    Execute the evaluation for the dataset with repetitions.
 
     The evaluators will:
       1. Check if the final deliverable (CSV/PNG) exists (Step 1)
       2. If protocol mode, compare key files against the reference (Step 2)
       3. Return a score: 0.0 (crash), 0.5 (undetermined), 1.0 (success)
+    
+    Args:
+        dataset: The pydantic-evals Dataset to evaluate
+        repeat: Number of times to repeat the evaluation (default 2)
     """
     print("\n" + "=" * 70)
     print("STEP 3: Running evaluation")
@@ -160,13 +148,13 @@ def evaluate_dataset(dataset):
         """
         Map a case label to the corresponding output directory.
 
-        label format: "<model>/<task>/run<n>"
+        label format: "<model>/<task>/<run_id>"
         """
         model, task, run = label.split("/")
-        return RESULTS_DIR / f"{model}_{MODE}" / task / f"{run}_output"
+        return RESULTS_DIR / f"{model}_protocol" / task / f"{run}_output"
 
     print("\nEvaluating all cases...\n")
-    report = dataset.evaluate_sync(get_output_dir, max_concurrency=1)
+    report = dataset.evaluate_sync(get_output_dir, repeat=repeat, max_concurrency=1)
 
     return report
 
@@ -185,9 +173,9 @@ def print_results(report):
     report.print(include_reasons=True)
 
     # Summary statistics
-    print("\n" + "=" * 70)
+    print("\n" + "-" * 70)
     print("Summary")
-    print("=" * 70)
+    print("-" * 70)
 
     scores = [case.score for case in report.cases]
     total = len(scores)
@@ -233,8 +221,8 @@ def main():
         # Step 2: Create Dataset
         dataset = create_grading_dataset()
 
-        # Step 3: Evaluate
-        report = evaluate_dataset(dataset)
+        # Step 3: Evaluate (with repetitions)
+        report = evaluate_dataset(dataset, repeat=2)
 
         # Step 4: Print results
         print_results(report)
