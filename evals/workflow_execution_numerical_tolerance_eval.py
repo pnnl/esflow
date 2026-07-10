@@ -61,7 +61,7 @@ GRADE_SUCCESS = 1.0
 
 MODELS = [
     "GPT 5.4",
-    # "Gemini 3.5 Flash"
+    "Gemini 3.5 Flash"
 ]
 TASKS = [
     "task_01_obs_summary",
@@ -149,5 +149,5 @@ def run_task(label: str) -> Path:
 
 if __name__ == "__main__":
     dataset = make_dataset()
-    report = dataset.evaluate_sync(run_task, repeat=1, max_concurrency=1)
+    report = dataset.evaluate_sync(run_task, repeat=4, max_concurrency=2)
     report.print(include_reasons=True)
