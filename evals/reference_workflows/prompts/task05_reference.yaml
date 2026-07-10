@@ -1,0 +1,76 @@
+name: "T5 Reference: Basin-Scale Streamflow Analysis"
+description: |
+  Reference workflow for Task 05. For six major river basins (Amazon,
+  Missouri, Columbia, Danube, Mekong, Orange), match gauges to the MOSART
+  grid, extract simulated and observed daily discharge for 1985-1989,
+  compute validation metrics (RMSE, NSE, KGE), and produce per-basin
+  figures showing the drainage basin boundary and sim-vs-obs time series.
+
+settings:
+  output_dir: ./output/task05_basin_streamflow
+  data_dir: ./data/sample/e3sm
+  case_name: sample.v3.LR.historical
+  metadata_file: ./data/sample/obs/gauge_metadata.csv
+  obs_dir: ./data/sample/obs/streamflow
+  basins_file: ./data/sample/obs/basin_polygons.geojson
+  years: [1985, 1986, 1987, 1988, 1989]
+
+steps:
+  - id: load_metadata
+    tool: load_obs_metadata
+    params:
+      metadata_file: "${settings.metadata_file}"
+    outputs:
+      metadata_file: gauge_metadata.csv
+
+  - id: match_gauges
+    tool: match_to_grid
+    params:
+      gauge_metadata: "${load_metadata.outputs.metadata_file}"
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: mosart
+    outputs:
+      matched_file: matched_gauges.csv
+
+  - id: extract_sim
+    tool: extract_e3sm_timeseries
+    params:
+      data_dir: "${settings.data_dir}"
+      case_name: "${settings.case_name}"
+      component: mosart
+      variable: RIVER_DISCHARGE_OVER_LAND_LIQ
+      locations_file: "${match_gauges.outputs.matched_file}"
+      years: "${settings.years}"
+      frequency: daily
+    outputs:
+      timeseries_file: sim_discharge.csv
+
+  - id: extract_obs
+    tool: extract_obs_timeseries
+    params:
+      obs_dir: "${settings.obs_dir}"
+      gauge_metadata: "${load_metadata.outputs.metadata_file}"
+      years: "${settings.years}"
+    outputs:
+      timeseries_file: obs_discharge.csv
+
+  - id: compute_metrics
+    tool: compute_metrics
+    params:
+      sim_file: "${extract_sim.outputs.timeseries_file}"
+      obs_file: "${extract_obs.outputs.timeseries_file}"
+    outputs:
+      metrics_file: discharge_metrics.csv
+
+  - id: plot_basins
+    tool: plot_basin_timeseries
+    params:
+      basins_file: "${settings.basins_file}"
+      sim_file: "${extract_sim.outputs.timeseries_file}"
+      obs_file: "${extract_obs.outputs.timeseries_file}"
+      locations_file: "${load_metadata.outputs.metadata_file}"
+      gauge_ids: "3629000,4121801,4115200,6742900,2969100,1159100"
+      metrics_file: "${compute_metrics.outputs.metrics_file}"
+    outputs:
+      plot_files: basin_plots

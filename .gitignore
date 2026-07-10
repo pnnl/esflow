@@ -2,6 +2,7 @@
 __pycache__
 data
 .env
-outputs
+output
 CLAUDE.md
 .claude
+evals/reference_workflows/results

@@ -71,7 +71,7 @@ MODELS: dict[str, Model] = {
     "Claude Opus 4.8": incubator_anthropic_model("claude-opus-4-8-project"),
     "Claude Haiku 4.5": incubator_anthropic_model("claude-haiku-4-5-20251001-v1-project"),
     "GPT 5.5": incubator_openai_model("gpt-5.5-project"),
-    "GPT 5.4 Nano": incubator_openai_model("gpt-5.4-nano-project"),
+    "GPT 5.4": incubator_openai_model("gpt-5.4-project"),
     "GPT 5.1": incubator_openai_model("gpt-5.1-project"),
     "GPT o4 Mini": incubator_openai_model("o4-mini-project"),
     "Gemma 4 26B": incubator_google_model("gemma-4-26b-a4b-project"),
@@ -85,7 +85,7 @@ model = MODELS["Claude Sonnet 4.6"]
 def load_prompt(extra_instructions: str = "") -> str:
     """Load system prompt and tool catalog, optionally with extra instructions."""
     base_prompt = (_HERE.parent / "system_prompt.md").read_text(encoding="utf-8")
-    tool_catalog = (_REPO_ROOT / "tool_catalog.yaml").read_text(encoding="utf-8")
+    tool_catalog = (_REPO_ROOT / "tools" / "tool_catalog.yaml").read_text(encoding="utf-8")
     return (
         f"{base_prompt}\n\n"
         f"## Tool Catalog\n\n"

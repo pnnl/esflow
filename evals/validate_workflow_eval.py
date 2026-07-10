@@ -3,14 +3,12 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from tenacity import stop_after_attempt, wait_random_exponential, retry_if_exception_type
-
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
-from pydantic_ai.exceptions import ModelAPIError
 
+from agents.planner.settings import default_settings
 from common.workflow import Workflow
-from app import plan_workflow_one_shot, default_settings
+from agents.planner.oneshot_planner import plan_workflow_one_shot
 from common.workflow_validation import validate_workflow
 
 
@@ -77,14 +75,7 @@ def plan_workflow(task_file: str) -> Workflow:
         task_description = f.read()
     return asyncio.run(plan_workflow_one_shot(task_description, default_settings()))
 
-task_retry_config = {
-    'stop': stop_after_attempt(3),  # Stop after 3 attempts
-    'wait': wait_random_exponential(max=60),  # Exponential backoff: 1s, 2s, 4s, 8s (capped at 10s)
-    'retry': retry_if_exception_type(ModelAPIError),
-    'reraise': True,  # Re-raise the original exception after exhausting retries
-}
-
 # Run the evaluation
-report = dataset.evaluate_sync(plan_workflow, retry_task=task_retry_config, max_concurrency=2)
+report = dataset.evaluate_sync(plan_workflow, max_concurrency=2)
 # Print the results
 report.print(include_reasons=True)

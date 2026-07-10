@@ -13,7 +13,7 @@ def validate_workflow(workflow: dict, catalog_path: Path | None = None) -> list[
     errors: list[str] = []
 
     if catalog_path is None:
-        catalog_path = _REPO_ROOT / "tool_catalog.yaml"
+        catalog_path = _REPO_ROOT / "tools" / "tool_catalog.yaml"
 
     if not catalog_path.exists():
         errors.append(f"Tool catalog not found: {catalog_path}")
