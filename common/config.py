@@ -1,5 +1,6 @@
 """Shared configuration and model setup for all agents."""
 
+from enum import Enum
 from pathlib import Path
 
 from pydantic_ai.models import Model
@@ -20,10 +21,18 @@ _REPO_ROOT = _HERE.parent
 INCUBATOR_BASE_URL = "https://ai-incubator-api.pnnl.gov"
 
 
+class WebAgentMode(str, Enum):
+    """Supported web app agent modes."""
+
+    PLANNER = "planner"
+    PLANNER_EXECUTOR = "planner_executor"
+
+
 class RuntimeConfig(BaseSettings):
     """Runtime configuration loaded from environment and .env file."""
 
     AI_INCUBATOR_KEY: str
+    WEB_AGENT_MODE: WebAgentMode = WebAgentMode.PLANNER
 
     model_config = SettingsConfigDict(
         env_file=str(_REPO_ROOT / ".env"),
