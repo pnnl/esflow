@@ -3,11 +3,8 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from tenacity import stop_after_attempt, wait_random_exponential, retry_if_exception_type
-
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
-from pydantic_ai.exceptions import ModelAPIError
 
 from agents.planner.settings import default_settings
 from common.workflow import Workflow
