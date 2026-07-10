@@ -1,53 +1,16 @@
 """
-Reproducible structural grading of benchmark runs (3-step design),
-exposed as pydantic-evals ``Evaluator`` subclasses.
+Reproducible structural grading helpers for benchmark runs.
 
-Grade taxonomy
---------------
-The paper uses four grades:  crash, success, silent failure, obvious failure.
-Two can be assigned deterministically; the rest need human review.
-
-  Step 1 — Crash detection (both modes)
-      CRASH iff the required final deliverable is missing:
-        T1               -> a summary-statistics CSV
-        T2 .. T7         -> at least one PNG figure
-
-  Step 2 — Success detection (protocol mode only)
-      SUCCESS iff the key data file is numerically identical to the
-      reference within float64 precision (rtol=1e-12, atol=1e-15).
-      Baseline runs are not auto-graded here because output filenames
-      are not predictable across free-form scripts.
-
-  Step 3 — Manual review (everything else)
-      UNDETERMINED runs are flagged for human inspection.
-
-Evaluators
-----------
-``HasDeliverable``
-    Wraps Step 1.  Returns True/False.
-
-``MatchesReference``
-    Wraps Step 2.  Returns True/False.  Protocol runs only.
-
-``StructuralGrade``
-    Combines both steps and returns a numeric score:
-      crash        -> 0.0
-      success      -> 1.0
-      undetermined -> 0.5
-
-Both evaluators expect ``ctx.output`` to be a ``pathlib.Path`` pointing to
-the run's output directory (``…/<model>_<mode>/<task>/run<n>_output``).
+This module provides the reusable deliverable detection and numerical
+comparison helpers used by the evaluation entrypoints.
 
 """
 
 import csv
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import xarray as xr
-from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 # Numerical tolerance for the success check.
 # Set to float64 precision following cprnc-style verification, but allowing
@@ -241,7 +204,7 @@ def nc_matches(ref_path: Path, test_path: Path):
 
 
 def protocol_matches_reference(out_dir: Path, task: str,
-                               ref_csv: Path, ref_nc: Path | None):
+                               ref_csv: Path | None, ref_nc: Path | None):
     """Return (success, reason) for a protocol run.
 
     The protocol mode succeeds iff (a) there is a key CSV in the run that
@@ -266,90 +229,3 @@ def protocol_matches_reference(out_dir: Path, task: str,
             return False, f"nc: {nc_reason}"
         return True, f"csv: {csv_reason}; nc: {nc_reason}"
     return True, f"csv: {csv_reason}"
-
-
-# ---------------------------------------------------------------------------
-# Grade scores used by Evaluator subclasses
-# ---------------------------------------------------------------------------
-GRADE_CRASH = 0.0
-GRADE_UNDETERMINED = 0.5
-GRADE_SUCCESS = 1.0
-
-
-# ---------------------------------------------------------------------------
-# pydantic-evals Evaluator subclasses
-# ---------------------------------------------------------------------------
-
-@dataclass
-class HasDeliverable(Evaluator[str, Path]):
-    """Step 1: CRASH detection.
-
-    Returns ``True`` when the final deliverable (CSV for T1, PNG for T2-T7)
-    is present in ``ctx.output`` (a ``Path`` to the run output directory).
-    Returns ``False`` (crash) otherwise.
-    """
-    task: str
-
-    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
-        ok, reason = has_deliverable(ctx.output, self.task)
-        return EvaluationReason(value=ok, reason=reason)
-
-
-@dataclass
-class MatchesReference(Evaluator[str, Path]):
-    """Step 2: numerical SUCCESS detection for protocol runs.
-
-    Compares ``ctx.output`` against the reference CSV/NC within
-    ``rtol=1e-12, atol=1e-15``.  Returns ``True`` on match, ``False``
-    otherwise.  Should only be added to protocol-mode cases.
-    """
-    task: str
-    ref_csv: Path | None = None
-    ref_nc: Path | None = None
-
-    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
-        ok, reason = protocol_matches_reference(
-            ctx.output, self.task, self.ref_csv, self.ref_nc
-        )
-        return EvaluationReason(value=ok, reason=reason)
-
-
-@dataclass
-class StructuralGrade(Evaluator[str, Path]):
-    """Combined Steps 1 + 2 returning a numeric score.
-
-    Scores:
-      crash        -> 0.0
-      success      -> 1.0
-      undetermined -> 0.5  (needs manual review)
-
-    ``ref_csv`` / ``ref_nc`` are required for protocol-mode success
-    detection; leave as ``None`` for baseline-mode cases.
-    """
-    task: str
-    mode: Literal["protocol", "baseline"]
-    ref_csv: Path | None = None
-    ref_nc: Path | None = None
-
-    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
-        # Step 1 — deliverable check
-        ok, reason = has_deliverable(ctx.output, self.task)
-        if not ok:
-            return EvaluationReason(value=GRADE_CRASH,
-                                    reason=f"crash: {reason}")
-
-        # Step 2 — protocol-only numerical match
-        if self.mode == "protocol":
-            match, why = protocol_matches_reference(
-                ctx.output, self.task, self.ref_csv, self.ref_nc
-            )
-            if match:
-                return EvaluationReason(value=GRADE_SUCCESS,
-                                        reason=f"success: {why}")
-            return EvaluationReason(value=GRADE_UNDETERMINED,
-                                    reason=f"undetermined: {why}")
-
-        return EvaluationReason(
-            value=GRADE_UNDETERMINED,
-            reason="undetermined: baseline non-crash, awaiting manual review",
-        )
