@@ -7,10 +7,22 @@ from pydantic_ai import RunContext
 from agents.domain import data_discovery, diagnostics, extraction, visualization
 from agents.domain import water_cycle
 from common import WorkflowState
-from common.workflow_validation import validate_workflow
+from common.workflow_validation import load_tool_specs, validate_workflow
 
 
 _PLACEHOLDER_TOKENS = {"UNKNOWN", "<UNKNOWN>", "TBD", "N/A", "NONE", "NULL"}
+
+
+def _is_required(tool_specs: dict, tool_name: str, param: str) -> bool:
+    """Whether a param is a required input of the tool, per the catalog.
+
+    Params the catalog does not describe are treated as required, so an empty value
+    is still reported when the catalog cannot vouch for it.
+    """
+    spec = tool_specs.get(tool_name, {}).get("inputs", {}).get(param)
+    if spec is None:
+        return True
+    return spec.get("required", False)
 
 
 async def check_completeness(ctx: RunContext[WorkflowState]) -> list[str]:
@@ -19,6 +31,7 @@ async def check_completeness(ctx: RunContext[WorkflowState]) -> list[str]:
     Returns an empty list when the workflow is fully specified.
     """
     gaps: list[str] = []
+    tool_specs = load_tool_specs()
     known_outputs = {
         f"{step.id}.outputs.{key}"
         for step in ctx.deps.workflow.steps
@@ -30,8 +43,12 @@ async def check_completeness(ctx: RunContext[WorkflowState]) -> list[str]:
                 gaps.append(f"{step.id}.{key} is null")
             elif isinstance(val, str):
                 s = val.strip()
-                if s == "" or s.upper() in _PLACEHOLDER_TOKENS:
-                    gaps.append(f"{step.id}.{key} is empty or a placeholder")
+                if s.upper() in _PLACEHOLDER_TOKENS:
+                    gaps.append(f"{step.id}.{key} is a placeholder")
+                elif s == "":
+                    # An optional input's empty value is its catalog default, not a gap.
+                    if _is_required(tool_specs, step.tool, key):
+                        gaps.append(f"{step.id}.{key} is empty")
                 elif s.startswith("${") and s.endswith("}"):
                     ref = s[2:-1]
                     if not ref.startswith("settings.") and ref not in known_outputs:
