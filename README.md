@@ -1,4 +1,6 @@
-# ESFlow
+<p align="center">
+  <img src="docs/logo.svg" alt="ESFlow" width="480">
+</p>
 
 A module-grounded framework for Earth System Model analysis. Scientists register analysis tools with typed metadata; any LLM reads the auto-generated tool catalog and composes YAML workflows. The human reviews, the engine executes.
 
