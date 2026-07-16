@@ -12,5 +12,6 @@ Your task is to add steps to an existing workflow by instantiating the appropria
 - Each output key should map to a filename that the tool will write.
 - Never emit placeholder values such as `<UNKNOWN>`, `UNKNOWN`, `TBD`, `N/A`, or empty strings for required params.
 - For every required param, provide either a concrete value or a valid `${settings.*}` or `${step_id.outputs.*}` reference. If neither is available, omit the step instead of inventing a placeholder.
+- Do not set a plot `units` label to a unit the data is not already in. No tool converts units, so a `units` value only relabels the axis. When unsure, omit `units` and let the plotter read the true units from the data file.
 
 ## Tool Catalog

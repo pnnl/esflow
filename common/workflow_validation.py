@@ -8,6 +8,20 @@ _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 
 
+def load_tool_specs(catalog_path: Path | None = None) -> dict[str, dict]:
+    """Return the tool catalog keyed by tool name, or {} if the catalog is missing."""
+    if catalog_path is None:
+        catalog_path = _REPO_ROOT / "tools" / "tool_catalog.yaml"
+
+    if not catalog_path.exists():
+        return {}
+
+    with open(catalog_path) as f:
+        catalog = yaml.safe_load(f)
+
+    return {t["name"]: t for t in catalog.get("tools", [])}
+
+
 def validate_workflow(workflow: dict, catalog_path: Path | None = None) -> list[str]:
     """Validate a workflow dict against the tool catalog and return errors."""
     errors: list[str] = []
@@ -19,10 +33,7 @@ def validate_workflow(workflow: dict, catalog_path: Path | None = None) -> list[
         errors.append(f"Tool catalog not found: {catalog_path}")
         return errors
 
-    with open(catalog_path) as f:
-        catalog = yaml.safe_load(f)
-
-    available_tools = {t["name"]: t for t in catalog.get("tools", [])}
+    available_tools = load_tool_specs(catalog_path)
 
     steps = workflow.get("steps", [])
     if not steps:

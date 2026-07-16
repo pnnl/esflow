@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -44,6 +46,49 @@ class PlannerExecutorResult(BaseModel):
     workflow: Workflow | None = None
     step_statuses: list[ExecutionStepStatus] = Field(default_factory=list)
     output_dir: str | None = None
+    workflow_file: str | None = None
+    plot_images: list[str] = Field(default_factory=list)
+
+
+# The static mount in app.py exposes this dir by name, so a plot written to
+# ``output/<run>/plot.png`` is reachable at ``/output/<run>/plot.png``.
+_SERVED_OUTPUT_ROOT = "output"
+
+
+def _plot_url(path: Path) -> str | None:
+    """Return the browser URL for a plot file, or None if it isn't served.
+
+    Only files under the mounted output root (relative to the process CWD) are
+    reachable; anything else can't be shown inline and is reported by path only.
+    """
+    try:
+        rel = path.resolve().relative_to(Path.cwd())
+    except ValueError:
+        return None
+    if not rel.parts or rel.parts[0] != _SERVED_OUTPUT_ROOT:
+        return None
+    return "/" + rel.as_posix()
+
+
+def _collect_plot_urls(workflow: Workflow, execution_context: dict) -> list[str]:
+    """Map this run's rendered image outputs to served URLs.
+
+    Uses the paths recorded in the execution context for each step, not a
+    directory glob, so re-runs into the same output dir show only the current
+    run's plots rather than every image accumulated there.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    for step in workflow.steps:
+        step_outputs = execution_context.get(step.id, {}).get("outputs", {})
+        for value in step_outputs.values():
+            if not isinstance(value, str) or not value.lower().endswith(".png"):
+                continue
+            url = _plot_url(Path(value))
+            if url is not None and url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
 
 
 async def plan_with_planner(ctx: RunContext[WorkflowState], task: str) -> str:
@@ -108,9 +153,17 @@ async def execute_planned_workflow(ctx: RunContext[WorkflowState]) -> PlannerExe
             workflow=ctx.deps.workflow,
         )
 
-    execution_context = run_workflow_definition(
+    # Persist the plan next to its outputs; the runner only holds it in memory.
+    output_dir = Path(ctx.deps.workflow.settings.output_dir)
+    workflow_path = output_dir / "workflow.yaml"
+    ctx.deps.workflow.write_to_file(workflow_path)
+
+    # The runner is synchronous and CPU/IO-bound; run it off the event loop so the
+    # web UI stays responsive while the workflow executes.
+    execution_context = await asyncio.to_thread(
+        run_workflow_definition,
         ctx.deps.workflow.to_yaml_dict(),
-        workflow_path="planned_workflow.yaml",
+        workflow_path=workflow_path,
     )
     if execution_context is None:
         return PlannerExecutorResult(
@@ -119,12 +172,26 @@ async def execute_planned_workflow(ctx: RunContext[WorkflowState]) -> PlannerExe
             workflow=ctx.deps.workflow,
         )
 
+    resolved_output_dir = Path(execution_context.get("output_dir", output_dir))
+    plot_urls = _collect_plot_urls(ctx.deps.workflow, execution_context)
+
+    message = f"Executed workflow with {len(ctx.deps.workflow.steps)} step(s)."
+    if plot_urls:
+        images_md = "\n\n".join(
+            f"![{Path(url).name}]({url})" for url in plot_urls
+        )
+        # Provide the exact Markdown so the agent can echo it verbatim; the URL is
+        # short enough to reproduce reliably, unlike an inlined image.
+        message += "\n\nPlot(s) — include this Markdown verbatim in your reply:\n" + images_md
+
     return PlannerExecutorResult(
         status="executed",
-        message=f"Executed workflow with {len(ctx.deps.workflow.steps)} step(s).",
+        message=message,
         workflow=ctx.deps.workflow,
         step_statuses=_step_statuses_from_execution_context(ctx.deps.workflow, execution_context),
-        output_dir=execution_context.get("output_dir", ctx.deps.workflow.settings.output_dir),
+        output_dir=str(resolved_output_dir),
+        workflow_file=str(workflow_path),
+        plot_images=plot_urls,
     )
 
 

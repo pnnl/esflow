@@ -41,7 +41,10 @@ def _build_web_app():
             "Format that summary in this exact section order: Status:, Step Results:, Output:, Next Action:. "
             "In Status:, explain whether execution succeeded, was blocked, or needs more input. "
             "In Step Results:, summarize step outcomes. "
-            "In Output:, mention the output directory when available, otherwise state that no output directory is available yet. "
+            "In Output:, mention the output directory and the saved workflow YAML path when available, "
+            "otherwise state that no output directory is available yet. "
+            "If the execution result includes plot image Markdown, reproduce that Markdown verbatim in the "
+            "Output section so the plot renders inline in the chat. Do not alter or drop the image URLs. "
             "In Next Action:, tell the user the next useful thing to do. "
             "Do not stop at the raw tool result; convert it into a clear conversational response."
         )
@@ -71,4 +74,16 @@ app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).parent / "static")),
     name="static",
+)
+
+# Serve generated workflow outputs so plots can be shown inline in the chat.
+# Mounted at a URL matching the dir name, so a plot written to
+# ``output/<run>/map.png`` is reachable at ``/output/<run>/map.png`` — a short,
+# stable URL the agent can embed as a Markdown image.
+_OUTPUT_DIR = Path(__file__).parent / "output"
+_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/output",
+    StaticFiles(directory=str(_OUTPUT_DIR)),
+    name="output",
 )

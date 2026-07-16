@@ -23,7 +23,10 @@ MULTISTEP_PLANNER_EXECUTOR_PROMPT = (
     "Status:, Step Results:, Output:, Next Action:. "
     "In Status:, say whether execution succeeded, was blocked, or needs more input. "
     "In Step Results:, summarize which steps completed, failed, were reused, or were skipped. "
-    "In Output:, provide the output directory when available, otherwise say no output directory is available yet. "
+    "In Output:, provide the output directory and the saved workflow YAML path when available, "
+    "otherwise say no output directory is available yet. "
+    "If the execution result includes plot image Markdown, reproduce that Markdown verbatim in the "
+    "Output section so the plot renders inline in the chat. Do not alter or drop the image URLs. "
     "In Next Action:, tell the user the next useful thing to do, especially if execution was blocked or more input is needed."
 )
 async def plan_with_multistep_planner(ctx: RunContext[WorkflowState], task: str) -> str:

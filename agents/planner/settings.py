@@ -9,5 +9,5 @@ def default_settings() -> Settings:
     """Build server-side default workflow settings."""
     return Settings(
         data_dir=os.getenv("ESFLOW_DATA_DIR", "./data/e3sm"),
-        output_dir=os.getenv("ESFLOW_OUTPUT_DIR", "./outputs"),
+        output_dir=os.getenv("ESFLOW_OUTPUT_DIR", "./output"),
     )
