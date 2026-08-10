@@ -20,11 +20,13 @@ web app.
 
 ## Architecture (non-obvious wiring)
 
-- **All models go through `OpenAIChatModel`**, even Claude/Gemini ones —
-  `common/config.py` routes every model through the PNNL Depot gateway
-  (`AnthropicModel`/`GoogleModel` are also wrapped with the same custom base URL).
-  Model IDs must exactly match the gateway's `/v1/models` listing, not the
-  vendor's public model names.
+- **One gateway, native protocols per vendor.** `common/config.py` points the PNNL
+  Depot gateway's single base URL at each vendor's native `Model`/`Provider` pair —
+  `OpenAIChatModel`/`OpenAIProvider` for GPT, `AnthropicModel`/`AnthropicProvider`
+  for Claude, `GoogleModel`/`GoogleProvider` for Gemini/Gemma — since the gateway
+  speaks all three wire protocols (chat completions, Anthropic messages, Google
+  generateContent) at that same host. Model IDs must exactly match the gateway's
+  `/v1/models` listing, not the vendor's public model names.
 - **Two independent planning stacks** share the same subagents and tools:
   - One-shot (`agents/planner/oneshot_planner*.py`): must return a structured
     `Workflow` in a single pass, never asks clarifying questions. Used
