@@ -1,0 +1,91 @@
+# AGENTS.md
+
+ESMFlow: an LLM planner/executor that composes and runs Earth System Model (ESM)
+analysis workflows from a validated tool catalog, served via a `pydantic-ai` chat
+web app.
+
+## Setup & run
+
+- Python 3.10 venv already at `.venv` (repo uses `/usr/bin/python` 3.10, not the
+  system default `python3` which may be newer — use `.venv/bin/python`).
+- Secrets/config live in `.env` (gitignored): `AI_INCUBATOR_KEY` (PNNL AI Incubator
+  "Depot" gateway key) and `WEB_AGENT_MODE` (`planner` or `planner_executor`).
+- `data/` and `/output` are gitignored and not present in a fresh clone. Sample
+  E3SM/obs data (`./data/sample/e3sm`, `./data/sample/obs`) must exist locally
+  before running workflows or evals — there is no fetch step for it.
+- Run the web app: `uvicorn app:app --env-file .env --host 127.0.0.1 --port 7932`.
+- `WEB_AGENT_MODE=planner` serves the interactive multistep planner (chat only,
+  never executes); `planner_executor` also lets the agent run the workflow and
+  render plots inline.
+
+## Architecture (non-obvious wiring)
+
+- **All models go through `OpenAIChatModel`**, even Claude/Gemini ones —
+  `common/config.py` routes every model through the PNNL Depot gateway
+  (`AnthropicModel`/`GoogleModel` are also wrapped with the same custom base URL).
+  Model IDs must exactly match the gateway's `/v1/models` listing, not the
+  vendor's public model names.
+- **Two independent planning stacks** share the same subagents and tools:
+  - One-shot (`agents/planner/oneshot_planner*.py`): must return a structured
+    `Workflow` in a single pass, never asks clarifying questions. Used
+    programmatically by evals (`plan_workflow_one_shot`).
+  - Multistep (`agents/planner/multistep_planner*.py`): conversational, may ask
+    clarifying questions and return plain text instead of a `Workflow`. Used by
+    the web app (`app.py`).
+  Both delegate to the same category subagents in `agents/domain/*.py` (data
+  discovery, extraction, diagnostics, water-cycle synthesis, visualization),
+  each constrained to a `Literal[...]` tool subset defined on a `Step` subclass
+  in `common/workflow.py` — Pydantic enforces the tool allow-list per category,
+  not the prompt.
+- **The tool catalog (`tools/tool_catalog.yaml`) is generated, not hand-edited.**
+  Source of truth is the `@esmflow_tool` decorator + `ToolSpec`/`Param` in
+  `tools/core/base.py`, attached to each tool module under
+  `tools/{fetchers,loaders,matchers,extractors,analyzers,plotters}/`. Regenerate
+  after adding/changing a tool: `python tools/generate_catalog.py --overwrite`
+  (run from repo root or adjust `tools_dir`). `common/config.load_prompt()`
+  inlines this YAML into every agent's system prompt, so a stale catalog
+  silently desyncs prompts from actual tool behavior.
+- **Workflow execution is dynamic-import based** (`common/workflow_runner.py`):
+  tools are loaded by filename lookup in the catalog/category dirs, params are
+  resolved via `${step_id.outputs.key}` / `${settings.key}` string interpolation
+  against a runtime `context` dict, and declared output filenames are used to
+  rename whatever file the tool actually returned. A step with no declared
+  `outputs` is always treated as not-yet-done (relevant for `--reuse`/`start_from`).
+- Planner/executor tools (`check_completeness`, `run_workflow_validation` in
+  `agents/planner/planner_tools.py`) must both pass before `execute_planned_workflow`
+  will run — the agent is instructed to call these itself; don't assume the
+  runner alone will reject an invalid workflow (it does, via `validate_workflow`,
+  but the friendlier path is via the planner tools).
+- Generated plot files are only shown inline in the web UI if they resolve under
+  `output/` relative to CWD (see `_plot_url` in `oneshot_planner_executor.py`) —
+  writing outputs outside `Settings.output_dir`/`output/` breaks inline rendering.
+
+## Conventions / gotchas
+
+- Never emit placeholder values (`UNKNOWN`, `<UNKNOWN>`, `TBD`, `N/A`, `""`) for
+  required tool params — this is enforced by convention/prompt, not by Pydantic;
+  `check_completeness` in `planner_tools.py` is what actually catches it.
+- Don't set a plot `units` param to a unit the data isn't already in — no tool
+  converts units; `units` only relabels the axis (see `system_prompt.md`).
+- `tools/core/base.ToolSpec.parse_config` is strict: unknown params raise
+  `ValueError` unless prefixed `output_` or named `output_dir`.
+- `list[int]` params accept `"2000-2005"` range syntax or comma lists; a bare
+  numeric string like `"2000"` is a common LLM mistake the validator flags.
+
+## Testing / evals
+
+- No unit test suite exists (no `pytest.ini`/test files). Verification is via
+  `pydantic_evals` datasets under `evals/`.
+- **`README.md`'s `python -m evals.evals` command does not exist** — the real
+  entrypoints are:
+  - `python -m evals.validate_workflow_eval` — checks the one-shot planner
+    produces catalog-valid workflows. Currently broken: it points at
+    `./evals/task_0N_*.txt`, but those prompt files live under
+    `evals/protocol_prompts/`; fix the `Case(inputs=...)` paths before trusting
+    this eval's output.
+  - `python evals/workflow_execution_numerical_tolerance_eval.py` — plans,
+    executes, and numerically grades (rtol=1e-12) full workflows per
+    (model, task) against references in `evals/reference_workflows/results/`.
+    Requires `./data/sample` to exist locally.
+- `requirements-eval.txt` (just `pydantic-evals`) is separate from
+  `requirements.txt`; install both to run evals.
