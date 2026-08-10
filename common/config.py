@@ -15,9 +15,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 
-# PNNL AI Incubator (Depot) gateway. Every Depot model is OpenAI-compatible, so all
-# models — including the Claude ones — are reached through OpenAIChatModel, not
-# AnthropicModel. Model IDs must match the gateway's /v1/models listing exactly.
+# PNNL AI Incubator (Depot) gateway. The gateway speaks each vendor's native wire
+# protocol (OpenAI chat completions, Anthropic messages, Google generateContent) at
+# this same base URL, so every model is wrapped by its matching native Model/Provider
+# pair below rather than being funneled through OpenAIChatModel. Model IDs must match
+# the gateway's /v1/models listing exactly.
 INCUBATOR_BASE_URL = "https://ai-incubator-api.pnnl.gov"
 
 
