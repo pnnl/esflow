@@ -76,8 +76,13 @@ web app.
 
 ## Testing / evals
 
-- No unit test suite exists (no `pytest.ini`/test files). Verification is via
-  `pydantic_evals` datasets under `evals/`.
+- Run deterministic unit and tool tests with `.venv/bin/python -m pytest`.
+  The suite lives under `tests/`, uses no live LLM calls, and requires
+  `requirements-test.txt` in addition to application dependencies. Tests marked
+  `sampledata` use the optional local `data/sample` dataset and reference outputs;
+  they skip automatically when either dataset is unavailable.
+- `pydantic_evals` datasets under `evals/` remain the separate live-LLM evaluation
+  harnesses for planner behavior and end-to-end workflow quality.
 - **`README.md`'s `python -m evals.evals` command does not exist** — the real
   entrypoints are:
   - `python -m evals.validate_workflow_eval` — checks the one-shot planner
