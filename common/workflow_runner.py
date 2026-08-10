@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from common.workflow_validation import validate_workflow
+
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
@@ -97,72 +99,6 @@ def _resolve_path(path: str, context: dict):
     return value
 
 
-def validate_workflow(workflow: dict, catalog_path: Path = None) -> list:
-    """Validate workflow against tool catalog. Returns list of errors."""
-    errors = []
-
-    if catalog_path is None:
-        catalog_path = _REPO_ROOT / 'tools' / 'tool_catalog.yaml'
-
-    if not catalog_path.exists():
-        errors.append(f"Tool catalog not found: {catalog_path}")
-        return errors
-
-    with open(catalog_path) as f:
-        catalog = yaml.safe_load(f)
-
-    available_tools = {t['name']: t for t in catalog.get('tools', [])}
-
-    steps = workflow.get('steps', [])
-    if not steps:
-        errors.append('Workflow has no steps')
-        return errors
-
-    step_ids = set()
-    for i, step in enumerate(steps):
-        step_id = step.get('id', f'step_{i}')
-
-        if step_id in step_ids:
-            errors.append(f"Duplicate step id: '{step_id}'")
-        step_ids.add(step_id)
-
-        tool_name = step.get('tool')
-        if not tool_name:
-            errors.append(f"Step '{step_id}' missing 'tool' field")
-            continue
-
-        if tool_name not in available_tools:
-            errors.append(f"Step '{step_id}' uses unknown tool: {tool_name}")
-            continue
-
-        tool_spec = available_tools[tool_name]
-        params = step.get('params', step.get('config', {}))
-
-        for input_name, input_spec in tool_spec.get('inputs', {}).items():
-            if input_spec.get('required', False) and input_name not in params:
-                if 'default' not in input_spec:
-                    errors.append(
-                        f"Step '{step_id}' missing required input: {input_name}"
-                    )
-
-        for param_name, param_value in params.items():
-            if param_name in tool_spec.get('inputs', {}):
-                expected_type = tool_spec['inputs'][param_name].get('type', '')
-                if expected_type == 'list[int]' and isinstance(param_value, str):
-                    if not any(c in param_value for c in [',', '-', '[', ']']):
-                        try:
-                            int(param_value)
-                            errors.append(
-                                f"Step '{step_id}' param '{param_name}': "
-                                f"expected list[int], got string '{param_value}'. "
-                                f"Use [int] or int-int range."
-                            )
-                        except ValueError:
-                            pass
-
-    return errors
-
-
 def check_step_outputs(step, context, output_dir):
     """Check if declared output files exist on disk."""
     step_params = step.get('params', step.get('config', {}))
@@ -223,7 +159,7 @@ def run_workflow_definition(
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print('=' * 70)
 
-    errors = validate_workflow(workflow)
+    errors = validate_workflow(workflow, _REPO_ROOT / 'tools' / 'tool_catalog.yaml')
     if errors:
         print('\nVALIDATION ERRORS:')
         for err in errors:

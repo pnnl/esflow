@@ -99,16 +99,6 @@ def test_runner_returns_none_when_validation_fails(tmp_path, monkeypatch):
     assert run_workflow_definition({"name": "invalid", "steps": []}) is None
 
 
-def test_runner_and_shared_validator_stay_behaviorally_aligned(tmp_path):
-    catalog_path = tmp_path / "catalog.yaml"
-    catalog_path.write_text(yaml.safe_dump({"tools": []}))
-    workflow = {"steps": [{"id": "unknown", "tool": "missing", "params": {}}]}
-
-    from common.workflow_validation import validate_workflow as shared_validate_workflow
-
-    assert validate_workflow(workflow, catalog_path) == shared_validate_workflow(workflow, catalog_path)
-
-
 def test_runner_start_from_marks_prior_steps_skipped_and_rejects_unknown_step(tmp_path, monkeypatch):
     from common import workflow_runner
 
