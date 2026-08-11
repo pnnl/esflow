@@ -113,7 +113,7 @@ async def execute_workflow(
         for step in workflow.steps
     }
     return WorkflowExecutionResult(
-        output_dir=str(context.get("output_dir", output_dir)),
+        output_dir=str(context["output_dir"]),
         workflow_file=str(workflow_file),
         step_statuses=step_statuses_from_execution_context(workflow, context),
         outputs=outputs,
