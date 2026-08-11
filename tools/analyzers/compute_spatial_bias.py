@@ -6,6 +6,7 @@ spatial RMSE, and spatial correlation. Regrids to coarser grid
 if resolutions differ.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -17,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.base import esmflow_tool, ToolSpec, Param
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -68,8 +71,8 @@ def run(config: dict) -> dict:
     a = _get_field(ds_a, field_a_path)
     b = _get_field(ds_b, field_b_path)
 
-    print(f"  Field A: {a.name} {dict(a.sizes)}")
-    print(f"  Field B: {b.name} {dict(b.sizes)}")
+    logger.info("Field A: %s %s", a.name, dict(a.sizes))
+    logger.info("Field B: %s %s", b.name, dict(b.sizes))
 
     # Handle time dimension if present
     if 'time' in a.dims:
@@ -83,10 +86,10 @@ def run(config: dict) -> dict:
 
     if a_nlat != b_nlat or len(ds_a.lon) != len(ds_b.lon):
         if a_nlat > b_nlat:
-            print(f"  Regridding A ({a_nlat} lat) to B grid ({b_nlat} lat)")
+            logger.info("Regridding A (%s lat) to B grid (%s lat)", a_nlat, b_nlat)
             a = _regrid_nearest(a, ds_b.lat, ds_b.lon)
         else:
-            print(f"  Regridding B ({b_nlat} lat) to A grid ({a_nlat} lat)")
+            logger.info("Regridding B (%s lat) to A grid (%s lat)", b_nlat, a_nlat)
             b = _regrid_nearest(b, ds_a.lat, ds_a.lon)
 
     # Compute bias
@@ -108,9 +111,9 @@ def run(config: dict) -> dict:
     else:
         corr = np.nan
 
-    print(f"  Mean bias: {mean_bias:.6f}")
-    print(f"  RMSE: {rmse:.6f}")
-    print(f"  Spatial correlation: {corr:.4f}")
+    logger.info("Mean bias: %.6f", mean_bias)
+    logger.info("RMSE: %.6f", rmse)
+    logger.info("Spatial correlation: %.4f", corr)
 
     # Save bias field
     lat_coord = ds_b.lat if a_nlat > b_nlat else ds_a.lat

@@ -4,6 +4,7 @@ Plot metrics on a map at gauge locations.
 Displays a specific metric (nse, kge, etc.) as colored markers on a map.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -19,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_map',
@@ -59,8 +62,8 @@ def run(config: dict) -> dict:
     merged = locs.merge(metrics[['gauge_id', metric]], on='gauge_id', how='inner')
     merged = merged.dropna(subset=[metric])
 
-    print(f"  Metric: {metric}")
-    print(f"  Gauges with data: {len(merged)}")
+    logger.info("Metric: %s", metric)
+    logger.info("Gauges with data: %s", len(merged))
 
     if len(merged) == 0:
         raise ValueError(f"No valid data for metric '{metric}'")

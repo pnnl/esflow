@@ -83,6 +83,12 @@ web app.
   `ValueError` unless prefixed `output_` or named `output_dir`.
 - `list[int]` params accept `"2000-2005"` range syntax or comma lists; a bare
   numeric string like `"2000"` is a common LLM mistake the validator flags.
+- Tool modules use `logger = logging.getLogger(__name__)`; console logging only
+  enables the `common` and `esmflow` namespaces. `workflow_runner.load_tool()`
+  loads tools as `esmflow.tools.<name>`, so their INFO logs are visible there,
+  but directly imported `tools.*` modules remain quiet. A standalone tool CLI
+  that needs INFO logs must configure the `tools` namespace or load tools via
+  `load_tool()`.
 - No lint/format/typecheck/pre-commit/CI config exists in this repo (no
   ruff/black/mypy/pyright config, no `.github/workflows`). Don't assume or
   invent a check command; `pytest` is the only automated verification.

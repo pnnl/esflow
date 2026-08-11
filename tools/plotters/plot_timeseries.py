@@ -4,6 +4,7 @@ Plot time series comparing simulated vs observed data.
 Produces a multi-panel figure with one subplot per gauge.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -18,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, get_colors, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_timeseries',
@@ -98,7 +101,7 @@ def run(config: dict) -> dict:
                 facecolor=palette['background'])
     plt.close()
 
-    print(f"  Plotted {n} gauges")
+    logger.info("Plotted %s gauges", n)
 
     return {
         'plot_file': str(out_path),

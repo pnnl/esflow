@@ -49,11 +49,15 @@ from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorCont
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
 from common.workflow import Settings
+from common.logging_setup import configure_console_logging
 from common.workflow_runner import run_workflow_definition
 from evals.structural_grading_helpers import (
     find_key_csv, find_key_nc,
     has_deliverable, protocol_matches_reference,
 )
+
+
+configure_console_logging()
 
 GRADE_CRASH = 0.0
 GRADE_UNDETERMINED = 0.5

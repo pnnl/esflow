@@ -6,6 +6,7 @@ normalised error metrics across water cycle components (ET bias, runoff
 bias, streamflow bias, water balance residual, Wasserstein distance).
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -19,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_basin_radar',
@@ -91,7 +94,7 @@ def run(config: dict) -> dict:
     budget['gauge_id'] = budget['gauge_id'].astype(str)
 
     n_basins = len(budget)
-    print(f"  Basins: {n_basins}")
+    logger.info("Basins: %s", n_basins)
 
     # Prepare metric columns
     available_metrics = [(col, label, xform) for col, label, xform in RADAR_METRICS
@@ -148,7 +151,7 @@ def run(config: dict) -> dict:
     fig.savefig(out_path, dpi=200, bbox_inches='tight',
                 facecolor=palette['background'])
     plt.close(fig)
-    print(f"  Saved: {out_path}")
+    logger.info("Saved: %s", out_path)
 
     return {
         'plot_file': str(out_path),

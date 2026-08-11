@@ -7,6 +7,7 @@ as a CSV.
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -17,6 +18,8 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 def _point_in_polygon(px, py, polygon_coords):
@@ -117,7 +120,7 @@ def run(config: dict) -> dict:
     fill_mask = np.abs(values) > 1e20
     if fill_mask.any():
         n_fill = fill_mask.sum()
-        print(f"  Masked {n_fill} fill values (>{1e20})")
+        logger.info("Masked %s fill values (>%s)", n_fill, 1e20)
         values[fill_mask] = np.nan
 
     # Convert 0-360 longitudes to -180..180 for consistency with GeoJSON
@@ -129,9 +132,9 @@ def run(config: dict) -> dict:
         sort_order = np.argsort(lon)
         lon = lon[sort_order]
         values = values[:, sort_order]
-        print(f"  Shifted lon to -180..180 range")
+        logger.info("Shifted lon to -180..180 range")
 
-    print(f"  Field: {var_name}, shape: {values.shape}")
+    logger.info("Field: %s, shape: %s", var_name, values.shape)
 
     # Load basins
     with open(basins_file) as f:
@@ -152,7 +155,7 @@ def run(config: dict) -> dict:
                 break
 
         if basin_feat is None:
-            print(f"  Warning: No basin polygon for {gid}")
+            logger.warning("No basin polygon for %s", gid)
             results.append({'gauge_id': gid, 'basin_mean': np.nan})
             continue
 
@@ -160,7 +163,7 @@ def run(config: dict) -> dict:
         n_cells = mask.sum()
 
         if n_cells == 0:
-            print(f"  Warning: No grid cells in basin {gid}")
+            logger.warning("No grid cells in basin %s", gid)
             results.append({'gauge_id': gid, 'basin_mean': np.nan})
             continue
 
@@ -176,7 +179,7 @@ def run(config: dict) -> dict:
                 np.where(valid, masked_weights, 0)))
 
         results.append({'gauge_id': gid, 'basin_mean': basin_mean})
-        print(f"  Basin {gid}: {n_cells} cells, mean = {basin_mean:.6f}")
+        logger.info("Basin %s: %s cells, mean = %.6f", gid, n_cells, basin_mean)
 
     ds.close()
 

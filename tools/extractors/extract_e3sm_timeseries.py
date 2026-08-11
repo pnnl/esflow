@@ -5,6 +5,7 @@ Reads matched_gauges CSV for grid indices, opens model files for
 the specified years, and extracts a time series at each location.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.e3sm import find_e3sm_files, open_e3sm_dataset, cftime_to_datetime
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='extract_e3sm_timeseries',
@@ -56,15 +59,15 @@ def run(config: dict) -> dict:
     # Load locations
     locs = pd.read_csv(locations_file)
     locs['gauge_id'] = locs['gauge_id'].astype(str)
-    print(f"  Locations: {len(locs)}")
-    print(f"  Years: {years[0]}-{years[-1]}")
-    print(f"  Variable: {variable}")
+    logger.info("Locations: %s", len(locs))
+    logger.info("Years: %s-%s", years[0], years[-1])
+    logger.info("Variable: %s", variable)
 
     # Find and open files
     frequency = config.get('frequency', 'monthly')
     files = find_e3sm_files(data_dir, case_name, component, years,
                             frequency=frequency)
-    print(f"  Files found: {len(files)}")
+    logger.info("Files found: %s", len(files))
 
     ds = open_e3sm_dataset(files, variables=[variable])
     mesh_type = ds.attrs.get('mesh_type', 'latlon')
@@ -107,7 +110,7 @@ def run(config: dict) -> dict:
     out_path = output_dir / 'sim_timeseries.csv'
     df.to_csv(out_path)
 
-    print(f"  Extracted {len(df.columns)} locations, {len(df)} timesteps")
+    logger.info("Extracted %s locations, %s timesteps", len(df.columns), len(df))
 
     return {
         'timeseries_file': str(out_path),

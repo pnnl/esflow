@@ -7,6 +7,7 @@ global map.
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -272,6 +275,6 @@ def run(config: dict) -> dict:
     fig.savefig(out_path, dpi=200, bbox_inches='tight',
                 facecolor=palette['background'])
     plt.close(fig)
-    print(f"  Saved: {out_path}")
+    logger.info("Saved: %s", out_path)
 
     return {'plot_file': str(out_path)}

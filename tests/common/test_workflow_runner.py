@@ -1,3 +1,5 @@
+import contextlib
+import io
 from pathlib import Path
 
 import pytest
@@ -51,7 +53,9 @@ def test_load_tool_uses_catalog_path_and_requires_run_function(tmp_path):
     (category_dir / "hello.py").write_text("def run(config):\n    return {'value': config['value']}\n")
     catalog = {"tools": [{"name": "hello", "path": "custom/hello.py"}]}
 
-    assert load_tool("hello", catalog, tools_dir).run({"value": 3}) == {"value": 3}
+    module = load_tool("hello", catalog, tools_dir)
+    assert module.__name__ == "esmflow.tools.hello"
+    assert module.run({"value": 3}) == {"value": 3}
     with pytest.raises(FileNotFoundError, match="Tool not found"):
         load_tool("missing", catalog, tools_dir)
 
@@ -90,6 +94,35 @@ def test_runner_renames_declared_outputs_and_reuses_them(tmp_path, monkeypatch):
 
     reused = run_workflow_definition(workflow, reuse=True)
     assert reused["write"]["result"] == {"reused": True}
+
+
+def test_runner_writes_no_output_to_stdout(tmp_path, monkeypatch):
+    from common import workflow_runner
+
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "stub.py").write_text(
+        "from pathlib import Path\n"
+        "def run(config):\n"
+        "    output = Path(config['output_dir']) / 'result.txt'\n"
+        "    output.write_text('ok')\n"
+        "    return {'result': str(output)}\n"
+    )
+    (tools_dir / "tool_catalog.yaml").write_text(
+        yaml.safe_dump({"tools": [{"name": "stub", "path": "stub.py", "inputs": {}, "outputs": {}}]})
+    )
+    workflow = {
+        "settings": {"output_dir": str(tmp_path / "output")},
+        "steps": [{"id": "step", "tool": "stub", "params": {}, "outputs": {"result": "result.txt"}}],
+    }
+    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
+    stdout = io.StringIO()
+
+    with contextlib.redirect_stdout(stdout):
+        context = run_workflow_definition(workflow)
+
+    assert stdout.getvalue() == ""
+    assert context["step"]["outputs"] == {"result": str(tmp_path / "output" / "result.txt")}
 
 
 def test_runner_returns_none_when_validation_fails(tmp_path, monkeypatch):

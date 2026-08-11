@@ -7,6 +7,7 @@ For each requested gauge, produces a two-panel figure:
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -23,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_basin_timeseries',
@@ -151,14 +154,14 @@ def run(config: dict) -> dict:
     if metrics_file:
         metrics_df = pd.read_csv(metrics_file)
         metrics_df['gauge_id'] = metrics_df['gauge_id'].astype(str)
-        print(f"  Metrics loaded: {len(metrics_df)} gauges")
+        logger.info("Metrics loaded: %s gauges", len(metrics_df))
 
     sim.columns = [str(c) for c in sim.columns]
     obs.columns = [str(c) for c in obs.columns]
     locs['gauge_id'] = locs['gauge_id'].astype(str)
 
-    print(f"  Basins loaded: {len(basins['features'])}")
-    print(f"  Gauge IDs requested: {gauge_ids}")
+    logger.info("Basins loaded: %s", len(basins['features']))
+    logger.info("Gauge IDs requested: %s", gauge_ids)
 
     plot_files = []
 
@@ -166,13 +169,13 @@ def run(config: dict) -> dict:
         grdc_no = int(gid)
         basin = _get_basin(basins, grdc_no)
         if basin is None:
-            print(f"  Warning: No basin polygon for {gid}, skipping")
+            logger.warning("No basin polygon for %s, skipping", gid)
             continue
 
         # Get gauge metadata
         row = locs[locs['gauge_id'] == gid]
         if len(row) == 0:
-            print(f"  Warning: No metadata for {gid}, skipping")
+            logger.warning("No metadata for %s, skipping", gid)
             continue
         row = row.iloc[0]
         lat, lon = float(row['lat']), float(row['lon'])
@@ -190,7 +193,7 @@ def run(config: dict) -> dict:
         has_obs = gid in obs.columns
 
         if not has_sim and not has_obs:
-            print(f"  Warning: No time series data for {gid}, skipping")
+            logger.warning("No time series data for %s, skipping", gid)
             continue
 
         # Create figure
@@ -257,7 +260,7 @@ def run(config: dict) -> dict:
                    facecolor=palette['background'])
         plt.close(fig)
         plot_files.append(str(out_path))
-        print(f"  Saved: {out_path}")
+        logger.info("Saved: %s", out_path)
 
     return {
         'plot_files': plot_files,

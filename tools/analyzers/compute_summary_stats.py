@@ -5,6 +5,7 @@ Computes mean, std, min, max for each gauge/column and optionally
 ranks by a statistic. Outputs a CSV with one row per gauge.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -51,7 +54,7 @@ def run(config: dict) -> dict:
     output_dir = Path(config['output_dir'])
 
     df = pd.read_csv(ts_file, index_col=0, parse_dates=True)
-    print(f"  Time series: {len(df)} timesteps, {len(df.columns)} columns")
+    logger.info("Time series: %s timesteps, %s columns", len(df), len(df.columns))
 
     results = []
     for col in df.columns:
@@ -77,7 +80,7 @@ def run(config: dict) -> dict:
                 left_on='column_name', right_on='gauge_id', how='left'
             ).drop(columns='gauge_id', errors='ignore')
         except Exception as e:
-            print(f"  Warning: Could not merge metadata: {e}")
+            logger.warning("Could not merge metadata: %s", e)
 
     # Rank and filter
     if rank_by not in stats_df.columns:
@@ -87,13 +90,13 @@ def run(config: dict) -> dict:
 
     if top_n > 0:
         stats_df = stats_df.head(top_n)
-        print(f"  Top {top_n} by {rank_by}:")
+        logger.info("Top %s by %s:", top_n, rank_by)
     else:
-        print(f"  All {len(stats_df)} columns (sorted by {rank_by}):")
+        logger.info("All %s columns (sorted by %s):", len(stats_df), rank_by)
 
     for _, row in stats_df.head(5).iterrows():
         name = row.get('river_name', row['column_name'])
-        print(f"    {row['column_name']}: mean={row['mean']:.2f} ({name})")
+        logger.info("%s: mean=%.2f (%s)", row['column_name'], row['mean'], name)
 
     out_path = output_dir / 'summary_stats.csv'
     stats_df.to_csv(out_path, index=False)

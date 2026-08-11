@@ -14,6 +14,7 @@ Metrics per gauge:
   - q90_ratio:  ratio of sim/obs low-flow quantile (exceedance prob 0.9)
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -23,6 +24,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 def _fdc(q: np.ndarray):
@@ -91,9 +94,9 @@ def run(config: dict) -> dict:
     obs.columns = [str(c) for c in obs.columns]
 
     common_cols = [c for c in sim.columns if c in obs.columns]
-    print(f"  Sim columns: {len(sim.columns)}")
-    print(f"  Obs columns: {len(obs.columns)}")
-    print(f"  Matched: {len(common_cols)}")
+    logger.info("Sim columns: %s", len(sim.columns))
+    logger.info("Obs columns: %s", len(obs.columns))
+    logger.info("Matched: %s", len(common_cols))
 
     if not common_cols:
         raise ValueError(
@@ -166,9 +169,9 @@ def run(config: dict) -> dict:
     for m in ['volume_bias', 'wasserstein', 'q50_ratio']:
         vals = metrics_df[m].dropna()
         if len(vals) > 0:
-            print(f"  {m}: median={vals.median():.3f}, mean={vals.mean():.3f}")
+            logger.info("%s: median=%.3f, mean=%.3f", m, vals.median(), vals.mean())
 
-    print(f"  Gauges analyzed: {len(metrics_df)}")
+    logger.info("Gauges analyzed: %s", len(metrics_df))
 
     metrics_path = output_dir / 'fdc_metrics.csv'
     fdc_path = output_dir / 'fdc_data.csv'

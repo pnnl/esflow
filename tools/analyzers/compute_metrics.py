@@ -5,6 +5,7 @@ Matches columns by name (gauge_id). Computes NSE, KGE, PBIAS, RMSE,
 correlation for each gauge pair.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +120,9 @@ def run(config: dict) -> dict:
 
     # Match by column name
     common_cols = [c for c in sim.columns if c in obs.columns]
-    print(f"  Sim columns: {len(sim.columns)}")
-    print(f"  Obs columns: {len(obs.columns)}")
-    print(f"  Matched: {len(common_cols)}")
+    logger.info("Sim columns: %s", len(sim.columns))
+    logger.info("Obs columns: %s", len(obs.columns))
+    logger.info("Matched: %s", len(common_cols))
 
     if not common_cols:
         raise ValueError(
@@ -141,14 +144,14 @@ def run(config: dict) -> dict:
     if sim_dt and obs_dt and abs(sim_dt - obs_dt) > 1:
         if sim_dt > obs_dt:
             obs = obs.resample('MS').mean() if sim_dt >= 28 else obs.resample(f'{int(round(sim_dt))}D').mean()
-            print(f"  Aggregated obs from ~{obs_dt:.1f}d to ~{sim_dt:.1f}d steps")
+            logger.info("Aggregated obs from ~%.1fd to ~%.1fd steps", obs_dt, sim_dt)
         else:
             sim = sim.resample('MS').mean() if obs_dt >= 28 else sim.resample(f'{int(round(obs_dt))}D').mean()
-            print(f"  Aggregated sim from ~{sim_dt:.1f}d to ~{obs_dt:.1f}d steps")
+            logger.info("Aggregated sim from ~%.1fd to ~%.1fd steps", sim_dt, obs_dt)
 
     # Find overlapping dates
     common_dates = sim.index.intersection(obs.index)
-    print(f"  Overlapping dates: {len(common_dates)}")
+    logger.info("Overlapping dates: %s", len(common_dates))
 
     if len(common_dates) == 0:
         raise ValueError("No overlapping dates between sim and obs.")
@@ -182,7 +185,7 @@ def run(config: dict) -> dict:
     for metric in ['nse', 'kge', 'pbias', 'rmse']:
         vals = metrics_df[metric].dropna()
         if len(vals) > 0:
-            print(f"  {metric}: median={vals.median():.3f}, mean={vals.mean():.3f}")
+            logger.info("%s: median=%.3f, mean=%.3f", metric, vals.median(), vals.mean())
 
     # Save
     out_path = output_dir / 'metrics.csv'

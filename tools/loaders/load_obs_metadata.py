@@ -5,6 +5,7 @@ Reads a gauge_metadata.csv with columns: gauge_id, lat, lon, area_km2, river_nam
 Validates required columns and passes the file through.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -13,6 +14,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='load_obs_metadata',
@@ -35,7 +38,7 @@ def run(config: dict) -> dict:
     metadata_file = config['metadata_file']
 
     df = pd.read_csv(metadata_file)
-    print(f"  Loaded {len(df)} gauges from {metadata_file}")
+    logger.info("Loaded %s gauges from %s", len(df), metadata_file)
 
     # Validate required columns
     required = ['gauge_id', 'lat', 'lon', 'area_km2', 'river_name']
@@ -54,8 +57,8 @@ def run(config: dict) -> dict:
     out_path = output_dir / 'gauge_metadata.csv'
     df.to_csv(out_path, index=False)
 
-    print(f"  Columns: {list(df.columns)}")
-    print(f"  Gauges: {len(df)}")
+    logger.info("Columns: %s", list(df.columns))
+    logger.info("Gauges: %s", len(df))
 
     return {
         'metadata_file': str(out_path),

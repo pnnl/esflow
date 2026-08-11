@@ -5,8 +5,8 @@ so callers can import and execute workflows directly from Python code.
 """
 
 import importlib.util
+import logging
 import re
-import traceback as tb_module
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +18,7 @@ from common.workflow_validation import validate_workflow
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
+logger = logging.getLogger(__name__)
 
 
 warnings.filterwarnings(
@@ -53,7 +54,7 @@ def load_tool(tool_name: str, catalog: dict = None, tools_dir: Path = None):
     if tool_path is None or not tool_path.exists():
         raise FileNotFoundError(f"Tool not found: {tool_name}")
 
-    spec = importlib.util.spec_from_file_location(tool_name, tool_path)
+    spec = importlib.util.spec_from_file_location(f"esmflow.tools.{tool_name}", tool_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -153,20 +154,21 @@ def run_workflow_definition(
     workflow_path = Path(workflow_path)
     workflow_name = workflow.get('name', workflow_path.stem)
 
-    print('=' * 70)
-    print(f"WORKFLOW: {workflow_name}")
-    print(f"File: {workflow_path}")
-    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print('=' * 70)
+    logger.info(
+        "Running workflow %s from %s at %s",
+        workflow_name,
+        workflow_path,
+        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    )
 
     errors = validate_workflow(workflow, _REPO_ROOT / 'tools' / 'tool_catalog.yaml')
     if errors:
-        print('\nVALIDATION ERRORS:')
+        logger.error("Workflow validation failed:")
         for err in errors:
-            print(f"   - {err}")
+            logger.error("- %s", err)
         return None
 
-    print('\nWorkflow validation passed')
+    logger.info("Workflow validation passed")
 
     steps = workflow.get('steps', [])
 
@@ -184,7 +186,7 @@ def run_workflow_definition(
     }
 
     if reuse:
-        print('\n--reuse: will skip steps with existing output files.')
+        logger.info("Reuse enabled; steps with existing output files will be skipped")
 
     total_steps = len(steps)
     start_idx = 0
@@ -192,12 +194,12 @@ def run_workflow_definition(
         step_ids = [s.get('id', f'step_{i}') for i, s in enumerate(steps)]
         if start_from in step_ids:
             start_idx = step_ids.index(start_from)
-            print(f"\nStarting from step '{start_from}' ({start_idx + 1}/{total_steps})")
+            logger.info("Starting from step %s (%s/%s)", start_from, start_idx + 1, total_steps)
         else:
-            print(f"\nStep '{start_from}' not found. Available: {step_ids}")
+            logger.error("Step %s not found. Available: %s", start_from, step_ids)
             return None
 
-    print(f"\nExecuting {total_steps - start_idx} of {total_steps} steps...\n")
+    logger.info("Executing %s of %s steps", total_steps - start_idx, total_steps)
 
     for i, step in enumerate(steps):
         step_id = step.get('id', f'step_{i}')
@@ -206,18 +208,18 @@ def run_workflow_definition(
         if i < start_idx:
             _, outputs = check_step_outputs(step, context, output_dir)
             context[step_id] = {'outputs': outputs, 'result': {'skipped': True}}
-            print(f"[{i+1}/{total_steps}] {step_id}: (skipped)")
+            logger.info("[%s/%s] %s: skipped", i + 1, total_steps, step_id)
             continue
 
         if reuse:
             all_exist, existing = check_step_outputs(step, context, output_dir)
             if all_exist:
                 context[step_id] = {'outputs': existing, 'result': {'reused': True}}
-                print(f"[{i+1}/{total_steps}] {step_id}: {tool_name}")
-                print('    Reusing existing files')
+                logger.info("[%s/%s] %s: %s", i + 1, total_steps, step_id, tool_name)
+                logger.info("Reusing existing files")
                 continue
 
-        print(f"[{i+1}/{total_steps}] {step_id}: {tool_name}")
+        logger.info("[%s/%s] %s: %s", i + 1, total_steps, step_id, tool_name)
 
         try:
             tool_module = load_tool(tool_name, catalog=catalog)
@@ -233,7 +235,7 @@ def run_workflow_definition(
                     params[f'output_{key}'] = str(step_output_dir / filename)
 
             if verbose:
-                print(f"    Params: {params}")
+                logger.info("Params: %s", params)
 
             if 'output_dir' not in params:
                 params['output_dir'] = str(output_dir)
@@ -266,34 +268,30 @@ def run_workflow_definition(
                         outputs[yaml_key] = str(actual)
 
             context[step_id] = {'outputs': outputs, 'result': result}
-            print('    Done')
+            logger.info("Done")
 
             if verbose and result:
                 for key, value in result.items():
-                    print(f"      {key}: {value}")
+                    logger.info("%s: %s", key, value)
 
         except Exception as e:
-            print(f"    FAILED: {e}")
-            print(tb_module.format_exc())
+            logger.exception("Step %s failed", step_id)
 
             if reuse:
                 all_exist, fallback = check_step_outputs(step, context, output_dir)
                 if all_exist:
                     context[step_id] = {'outputs': fallback, 'result': {'error': str(e)}}
-                    print('    Falling back to existing files')
+                    logger.info("Falling back to existing files")
                     continue
 
             context[step_id] = {'outputs': {}, 'result': {'error': str(e)}}
-            print('    (Continuing with remaining steps...)')
+            logger.info("Continuing with remaining steps")
 
-    print('\n' + '=' * 70)
-    print('WORKFLOW COMPLETE')
-    print('=' * 70)
-    print(f"\nOutputs: {output_dir}")
+    logger.info("Workflow complete; outputs: %s", output_dir)
 
     output_files = sorted(f for f in output_dir.glob('*') if f.is_file())
     if output_files:
-        print('\nGenerated files:')
+        logger.info("Generated files:")
         for output_file in output_files:
             size = output_file.stat().st_size
             if size < 1024:
@@ -302,7 +300,7 @@ def run_workflow_definition(
                 size_text = f"{size/1024:.1f} KB"
             else:
                 size_text = f"{size/1024/1024:.1f} MB"
-            print(f"   {output_file.name} ({size_text})")
+            logger.info("%s (%s)", output_file.name, size_text)
     return context
 
 

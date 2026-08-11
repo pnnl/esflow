@@ -6,6 +6,7 @@ distance) at gauge locations, plus FDC comparison panels for selected gauges
 spanning the metric range (best, median, worst).
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_fdc',
@@ -73,8 +76,8 @@ def run(config: dict) -> dict:
     merged = locs.merge(metrics[['gauge_id', metric]], on='gauge_id', how='inner')
     merged = merged.dropna(subset=[metric])
 
-    print(f"  Metric: {metric}")
-    print(f"  Gauges with data: {len(merged)}")
+    logger.info("Metric: %s", metric)
+    logger.info("Gauges with data: %s", len(merged))
 
     if len(merged) == 0:
         raise ValueError(f"No valid data for metric '{metric}'")
@@ -89,7 +92,7 @@ def run(config: dict) -> dict:
             [g for g in requested_ids if g in selected['gauge_id'].values]
         ].reset_index()
         n_panels = len(selected)
-        print(f"  Fixed gauge selection: {n_panels} of {len(requested_ids)} requested found")
+        logger.info("Fixed gauge selection: %s of %s requested found", n_panels, len(requested_ids))
     else:
         # Auto-select: best, worst, and evenly spaced by metric
         sorted_gauges = merged.sort_values(metric)
