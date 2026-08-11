@@ -14,6 +14,7 @@ from agents.planner.oneshot_planner_executor import (
     plan_and_execute_workflow as _plan_and_execute_workflow,
 )
 from agents.planner.settings import default_settings
+from common.logging_setup import configure_console_logging
 from common.workflow import Settings, Workflow
 from common.workflow_runner import (
     ExecutionStepStatus,
@@ -21,6 +22,9 @@ from common.workflow_runner import (
     step_statuses_from_execution_context,
 )
 from common.workflow_validation import validate_workflow as _validate_workflow
+
+
+configure_console_logging()
 
 
 mcp = FastMCP(
