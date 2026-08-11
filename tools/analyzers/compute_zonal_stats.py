@@ -5,6 +5,7 @@ Supports global mean or latitude-band means. Uses landfrac weighting
 when available. Outputs a CSV with one row per region.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -62,7 +65,7 @@ def run(config: dict) -> dict:
         if not data_vars:
             raise ValueError(f"No data variables found in {field_file}")
         vname = data_vars[0]
-        print(f"  Auto-selected variable: {vname}")
+        logger.info("Auto-selected variable: %s", vname)
 
     if vname not in ds:
         raise ValueError(f"Variable '{vname}' not found in {field_file}. "
@@ -105,8 +108,8 @@ def run(config: dict) -> dict:
     else:
         bands = [{'name': 'global', 'south': -90, 'north': 90}]
 
-    print(f"  Variable: {vname}, shape: {field.shape}")
-    print(f"  Regions: {[b['name'] for b in bands]}")
+    logger.info("Variable: %s, shape: %s", vname, field.shape)
+    logger.info("Regions: %s", [b['name'] for b in bands])
 
     # Compute stats for each band
     results = []
@@ -121,7 +124,7 @@ def run(config: dict) -> dict:
                 'mean': np.nan,
                 'area_weighted_mean': np.nan,
             })
-            print(f"  {band['name']}: no valid data")
+            logger.warning("%s: no valid data", band['name'])
             continue
 
         simple_mean = float(np.nanmean(field[valid]))
@@ -133,7 +136,7 @@ def run(config: dict) -> dict:
             'area_weighted_mean': weighted_mean,
         })
 
-        print(f"  {band['name']}: mean={simple_mean:.6e}, weighted={weighted_mean:.6e}")
+        logger.info("%s: mean=%.6e, weighted=%.6e", band['name'], simple_mean, weighted_mean)
 
     df = pd.DataFrame(results)
     out_path = output_dir / 'zonal_stats.csv'

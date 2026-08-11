@@ -5,6 +5,7 @@ Uses gauge coordinates and drainage area to find the best matching
 model grid cell. Produces a matched_gauges CSV with model indices.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -16,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.base import esmflow_tool, ToolSpec, Param
 from core.e3sm import find_e3sm_files, open_e3sm_dataset
 from core.spatial import match_point_to_grid
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='match_to_grid',
@@ -50,12 +53,12 @@ def run(config: dict) -> dict:
     # Load metadata
     meta = pd.read_csv(gauge_metadata)
     meta['gauge_id'] = meta['gauge_id'].astype(str)
-    print(f"  Gauges to match: {len(meta)}")
+    logger.info("Gauges to match: %s", len(meta))
 
     # Open one model file to get grid
     files = find_e3sm_files(data_dir, case_name, component, years=[])
     ds = open_e3sm_dataset(files[:1])
-    print(f"  Model grid: {ds.attrs.get('mesh_type', 'unknown')}")
+    logger.info("Model grid: %s", ds.attrs.get('mesh_type', 'unknown'))
 
     # Match each gauge
     results = []
@@ -81,7 +84,7 @@ def run(config: dict) -> dict:
     ds.close()
 
     matched_df = pd.DataFrame(results)
-    print(f"  Matched: {len(matched_df)} of {len(meta)}")
+    logger.info("Matched: %s of %s", len(matched_df), len(meta))
 
     out_path = output_dir / 'matched_gauges.csv'
     matched_df.to_csv(out_path, index=False)

@@ -9,7 +9,11 @@ from agents.planner.multistep_planner_executor import multistep_planner_executor
 from agents.planner.settings import default_settings
 from common import WorkflowState
 from common.config import MODELS, WebAgentMode, runtime_config
+from common.logging_setup import configure_console_logging
 from common.workflow import Workflow
+
+
+configure_console_logging()
 
 
 def _bootstrap_workflow_state() -> WorkflowState:

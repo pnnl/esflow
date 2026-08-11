@@ -7,6 +7,7 @@ colormap for the bias panel.  Optionally overlays summary statistics on the
 bias panel.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -19,6 +20,8 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 UNIT_LOOKUP = {
@@ -136,9 +139,9 @@ def run(config: dict) -> dict:
     if not units:
         units = units_o or units_s or UNIT_LOOKUP.get(vname_o, '') or UNIT_LOOKUP.get(vname_s, '')
 
-    print(f"  Obs: {vname_o} {data_o.shape}, Sim: {vname_s} {data_s.shape}, Bias: {vname_b} {data_b.shape}")
+    logger.info("Obs: %s %s, Sim: %s %s, Bias: %s %s", vname_o, data_o.shape, vname_s, data_s.shape, vname_b, data_b.shape)
     if units:
-        print(f"  Units: {units}")
+        logger.info("Units: %s", units)
 
     # Build titles with time ranges from data (override with time_range if set)
     obs_tr = time_range if time_range else trange_o
@@ -251,14 +254,14 @@ def run(config: dict) -> dict:
                     fontsize=9, fontfamily='monospace', va='bottom',
                     bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
                               alpha=0.9, edgecolor='#555555', linewidth=0.8))
-                print(f"  Stats overlay: {len(lines)} lines")
+                logger.info("Stats overlay: %s lines", len(lines))
         except Exception as e:
-            print(f"  Warning: Could not overlay stats: {e}")
+            logger.warning("Could not overlay stats: %s", e)
 
     # Save
     out_path = output_dir / 'bias_comparison.png'
     fig.savefig(out_path, dpi=200, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
-    print(f"  Saved: {out_path}")
+    logger.info("Saved: %s", out_path)
     return {'plot_file': str(out_path)}

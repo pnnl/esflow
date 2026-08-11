@@ -5,6 +5,7 @@ Produces a multi-panel figure with one panel per basin, each showing grouped
 bar charts of P, ET, and Q for both model and observations.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -18,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -50,7 +53,7 @@ def run(config: dict) -> dict:
     budget['gauge_id'] = budget['gauge_id'].astype(str)
 
     n_basins = len(budget)
-    print(f"  Basins: {n_basins}")
+    logger.info("Basins: %s", n_basins)
 
     # Layout
     n_cols = min(3, n_basins)
@@ -123,6 +126,6 @@ def run(config: dict) -> dict:
     fig.savefig(out_path, dpi=200, bbox_inches='tight',
                 facecolor=palette['background'])
     plt.close(fig)
-    print(f"  Saved: {out_path}")
+    logger.info("Saved: %s", out_path)
 
     return {'plot_file': str(out_path)}

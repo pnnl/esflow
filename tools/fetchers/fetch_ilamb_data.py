@@ -5,6 +5,7 @@ Downloads a NetCDF file for a given variable and dataset from
 https://www.ilamb.org/ILAMB-Data/. Caches locally to avoid re-downloading.
 """
 
+import logging
 import sys
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 # Registry of known ILAMB datasets: (variable, dataset) -> relative URL path
 ILAMB_DATASETS = {
@@ -100,17 +103,17 @@ def run(config: dict) -> dict:
     # Check cache
     if out_path.exists():
         size_mb = out_path.stat().st_size / 1e6
-        print(f"  Cached: {out_path} ({size_mb:.1f} MB)")
+        logger.info("Cached: %s (%.1f MB)", out_path, size_mb)
         return {'data_file': str(out_path)}
 
     # Download
-    print(f"  Downloading: {url}")
-    print(f"  Destination: {out_path}")
+    logger.info("Downloading: %s", url)
+    logger.info("Destination: %s", out_path)
 
     try:
         urllib.request.urlretrieve(url, str(out_path))
         size_mb = out_path.stat().st_size / 1e6
-        print(f"  Downloaded: {size_mb:.1f} MB")
+        logger.info("Downloaded: %.1f MB", size_mb)
     except Exception as e:
         if out_path.exists():
             out_path.unlink()

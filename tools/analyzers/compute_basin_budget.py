@@ -12,6 +12,7 @@ metrics to produce a unified per-basin summary table. For each basin:
 The summary table is suitable for radar-chart visualisation.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='compute_basin_budget',
@@ -84,7 +87,7 @@ def run(config: dict) -> dict:
         # Auto-convert obs P units: if obs_P >> model_P, likely mm/day vs mm/s
         if budget['obs_P'].median() > budget['model_P'].median() * 1000:
             budget['obs_P'] = budget['obs_P'] / 86400.0
-            print("  Auto-converted obs_P from mm/day to mm/s (÷86400)")
+            logger.info("Auto-converted obs_P from mm/day to mm/s (divided by 86400)")
     budget = budget.merge(oe.rename(columns={'basin_mean': 'obs_ET'}), on='gauge_id', how='outer')
     budget = budget.merge(oq.rename(columns={'basin_mean': 'obs_Q'}), on='gauge_id', how='outer')
 
@@ -128,12 +131,18 @@ def run(config: dict) -> dict:
         budget = budget.rename(columns={'volume_bias': 'streamflow_bias'})
 
     # Print summary
-    print(f"  Basins: {len(budget)}")
+    logger.info("Basins: %s", len(budget))
     for col in ['precip_rel_bias', 'et_rel_bias', 'runoff_rel_bias', 'water_balance', 'streamflow_bias', 'wasserstein']:
         if col in budget.columns:
             vals = budget[col].dropna()
             if len(vals) > 0:
-                print(f"  {col}: mean={vals.mean():.4f}, range=[{vals.min():.4f}, {vals.max():.4f}]")
+                logger.info(
+                    "%s: mean=%.4f, range=[%.4f, %.4f]",
+                    col,
+                    vals.mean(),
+                    vals.min(),
+                    vals.max(),
+                )
 
     out_path = output_dir / 'basin_budget.csv'
     budget.to_csv(out_path, index=False)

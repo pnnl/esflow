@@ -5,6 +5,7 @@ Computes time-mean (or sum of multiple variables) and outputs a simple
 lat-lon NetCDF file suitable for spatial comparison and plotting.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.e3sm import find_e3sm_files, open_e3sm_dataset, cftime_to_datetime
+
+logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
@@ -64,14 +67,14 @@ def run(config: dict) -> dict:
 
     # Open dataset — either E3SM model or observation file
     if obs_file:
-        print(f"  Opening observation file: {obs_file}")
+        logger.info("Opening observation file: %s", obs_file)
         ds = xr.open_dataset(obs_file)
         source = 'obs'
     elif data_dir and case_name:
-        print(f"  Opening E3SM {component} data: {case_name}")
+        logger.info("Opening E3SM %s data: %s", component, case_name)
         years_list = years if years else []
         files = find_e3sm_files(data_dir, case_name, component, years_list)
-        print(f"  Files found: {len(files)}")
+        logger.info("Files found: %s", len(files))
         ds = open_e3sm_dataset(files, variables=var_names)
         source = 'model'
     else:
@@ -81,7 +84,7 @@ def run(config: dict) -> dict:
         )
 
     # Extract and sum variables
-    print(f"  Variables: {var_names}")
+    logger.info("Variables: %s", var_names)
     field = None
     for vname in var_names:
         if vname not in ds:
@@ -97,7 +100,7 @@ def run(config: dict) -> dict:
     # Compute time mean and record time range
     time_range = ''
     if 'time' in field.dims:
-        print(f"  Time steps: {len(field.time)}")
+        logger.info("Time steps: %s", len(field.time))
         try:
             tvals = field.time.values
             # Works for both datetime64 and cftime objects
@@ -133,8 +136,8 @@ def run(config: dict) -> dict:
     out_path = output_dir / f'{safe_name}_mean.nc'
     out_ds.to_netcdf(out_path)
 
-    print(f"  Output shape: {dict(field_mean.sizes)}")
-    print(f"  Saved: {out_path}")
+    logger.info("Output shape: %s", dict(field_mean.sizes))
+    logger.info("Saved: %s", out_path)
 
     ds.close()
 

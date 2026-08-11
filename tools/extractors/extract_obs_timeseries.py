@@ -5,6 +5,7 @@ Reads per-gauge CSVs (date, discharge_m3s) from an observation directory,
 filters to specified years, and produces a combined time series CSV.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='extract_obs_timeseries',
@@ -51,13 +54,13 @@ def run(config: dict) -> dict:
     gauge_ids_filter = config.get('gauge_ids', '')
     if gauge_ids_filter:
         gauge_ids = [g.strip() for g in gauge_ids_filter.split(',')]
-        print(f"  Filtering to {len(gauge_ids)} specified gauges")
+        logger.info("Filtering to %s specified gauges", len(gauge_ids))
     else:
         gauge_ids = meta['gauge_id'].tolist()
 
-    print(f"  Gauges in metadata: {len(gauge_ids)}")
-    print(f"  Years: {years[0]}-{years[-1]}")
-    print(f"  Obs directory: {obs_dir}")
+    logger.info("Gauges in metadata: %s", len(gauge_ids))
+    logger.info("Years: %s-%s", years[0], years[-1])
+    logger.info("Obs directory: %s", obs_dir)
 
     # Read per-gauge CSVs
     all_series = {}
@@ -78,8 +81,8 @@ def run(config: dict) -> dict:
         if len(df) > 0:
             all_series[gauge_id] = df['discharge_m3s']
 
-    print(f"  Found CSVs: {n_found} of {len(gauge_ids)}")
-    print(f"  With data in year range: {len(all_series)}")
+    logger.info("Found CSVs: %s of %s", n_found, len(gauge_ids))
+    logger.info("With data in year range: %s", len(all_series))
 
     if not all_series:
         raise ValueError(
@@ -96,7 +99,7 @@ def run(config: dict) -> dict:
     out_path = output_dir / 'obs_timeseries.csv'
     combined.to_csv(out_path)
 
-    print(f"  Combined: {len(combined)} timesteps, {len(combined.columns)} gauges")
+    logger.info("Combined: %s timesteps, %s gauges", len(combined), len(combined.columns))
 
     return {
         'timeseries_file': str(out_path),

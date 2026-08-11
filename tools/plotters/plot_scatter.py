@@ -4,6 +4,7 @@ Plot scatter comparison between two time series files.
 Computes mean values per gauge from both files and creates a scatter plot.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -17,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
 from core.styling import apply_style, get_colors, COLOR_PALETTES
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name='plot_scatter',
@@ -64,7 +67,7 @@ def run(config: dict) -> dict:
     x_vals = x_means[valid].values
     y_vals = y_means[valid].values
 
-    print(f"  Matched gauges: {len(common)}, valid: {valid.sum()}")
+    logger.info("Matched gauges: %s, valid: %s", len(common), valid.sum())
 
     # Plot
     fig, ax = plt.subplots(figsize=(8, 8))

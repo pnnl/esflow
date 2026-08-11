@@ -6,6 +6,7 @@ and a colorbar. Suitable for model fields, observation fields, or bias maps.
 Optionally overlays summary statistics from a CSV file.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -18,6 +19,8 @@ import xarray as xr
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.base import esmflow_tool, ToolSpec, Param
+
+logger = logging.getLogger(__name__)
 
 
 # Auto-detect units from variable name
@@ -86,7 +89,7 @@ def run(config: dict) -> dict:
         if not data_vars:
             raise ValueError(f"No data variables found in {field_file}")
         vname = data_vars[0]
-        print(f"  Auto-selected variable: {vname}")
+        logger.info("Auto-selected variable: %s", vname)
 
     field = ds[vname]
 
@@ -98,7 +101,7 @@ def run(config: dict) -> dict:
     lon = ds['lon'].values
     data = field.values
 
-    print(f"  Variable: {vname}, shape: {data.shape}")
+    logger.info("Variable: %s, shape: %s", vname, data.shape)
 
     # Determine units
     if not units:
@@ -108,7 +111,7 @@ def run(config: dict) -> dict:
         # Fall back to lookup table
         units = UNIT_LOOKUP.get(vname, '')
     if units:
-        print(f"  Units: {units}")
+        logger.info("Units: %s", units)
 
     # Determine colormap — diverging if data spans negative and positive
     finite_data = data[np.isfinite(data)]
@@ -204,9 +207,9 @@ def run(config: dict) -> dict:
                                    facecolor='white', alpha=0.9,
                                    edgecolor='#555555', linewidth=0.8),
                          verticalalignment='bottom')
-                print(f"  Stats overlay: {len(lines)} lines")
+                logger.info("Stats overlay: %s lines", len(lines))
         except Exception as e:
-            print(f"  Warning: Could not overlay stats: {e}")
+            logger.warning("Could not overlay stats: %s", e)
 
     # Save
     safe_name = vname.lower().replace('+', '_')
@@ -214,7 +217,7 @@ def run(config: dict) -> dict:
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    print(f"  Saved: {out_path}")
+    logger.info("Saved: %s", out_path)
 
     ds.close()
 
