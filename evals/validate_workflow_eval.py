@@ -39,31 +39,31 @@ dataset = Dataset(
     cases=[
         Case(
             name='observation_summary',
-            inputs='./evals/task_01_obs_summary.txt',
+            inputs='./evals/protocol_prompts/task_01_obs_summary.txt',
         ),
         Case(
             name='seasonal_runoff',
-            inputs='./evals/task_02_seasonal_runoff.txt',
+            inputs='./evals/protocol_prompts/task_02_seasonal_runoff.txt',
         ),
         Case(
             name='et_benchmark',
-            inputs='./evals/task_03_et_benchmark.txt',
+            inputs='./evals/protocol_prompts/task_03_et_benchmark.txt',
         ),
         Case(
             name='streamflow_fdc',
-            inputs='./evals/task_04_streamflow_fdc.txt',
+            inputs='./evals/protocol_prompts/task_04_streamflow_fdc.txt',
         ),
         Case(
             name='basin_streamflow',
-            inputs='./evals/task_05_basin_streamflow.txt',
+            inputs='./evals/protocol_prompts/task_05_basin_streamflow.txt',
         ),
         Case(
             name='water_balance',
-            inputs='./evals/task_06_water_balance.txt',
+            inputs='./evals/protocol_prompts/task_06_water_balance.txt',
         ),
         Case(
             name='integrated_diagnostic',
-            inputs='./evals/task_07_integrated_diagnostic.txt',
+            inputs='./evals/protocol_prompts/task_07_integrated_diagnostic.txt',
         ),
     ],
     evaluators=[IsValidWorkflow()],

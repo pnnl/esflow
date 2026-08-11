@@ -19,6 +19,9 @@ Create a workflow to:
 Write the workflow as yaml to the output folder
 ```
 
-Running evals
+## Running evals
 
-From the root run `python -m evals.evals`
+From the repository root, run one of:
+
+- `python -m evals.validate_workflow_eval` to assess catalog-valid workflow generation.
+- `python evals/workflow_execution_numerical_tolerance_eval.py` to plan, execute, and numerically grade workflows. This requires the local sample data.
