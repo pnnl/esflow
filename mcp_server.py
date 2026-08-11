@@ -21,7 +21,10 @@ from common.workflow_runner import (
     run_workflow_definition,
     step_statuses_from_execution_context,
 )
-from common.workflow_validation import validate_workflow as _validate_workflow
+from common.workflow_validation import (
+    check_completeness as _check_completeness,
+    validate_workflow as _validate_workflow,
+)
 
 
 configure_console_logging()
@@ -78,7 +81,12 @@ async def execute_workflow(
     reuse: bool = False,
 ) -> WorkflowExecutionResult:
     """Execute a validated workflow and return per-step statuses and output file paths."""
-    errors = _validate_workflow(workflow.to_yaml_dict())
+    workflow_definition = workflow.to_yaml_dict()
+    gaps = _check_completeness(workflow_definition)
+    if gaps:
+        raise ValueError("Workflow is missing required values:\n- " + "\n- ".join(gaps))
+
+    errors = _validate_workflow(workflow_definition)
     if errors:
         raise ValueError("Workflow failed catalog validation:\n- " + "\n- ".join(errors))
 
@@ -88,7 +96,7 @@ async def execute_workflow(
 
     context = await asyncio.to_thread(
         run_workflow_definition,
-        workflow.to_yaml_dict(),
+        workflow_definition,
         workflow_path=workflow_file,
         start_from=start_from,
         reuse=reuse,

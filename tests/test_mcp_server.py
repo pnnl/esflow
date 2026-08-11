@@ -86,6 +86,28 @@ async def test_execute_workflow_reports_validation_errors_before_writing_files(t
     assert not output_dir.exists()
 
 
+async def test_execute_workflow_blocks_placeholder_values_before_writing_files(tmp_path):
+    output_dir = tmp_path / "output"
+    workflow = Workflow(
+        name="Incomplete MCP workflow",
+        description="Contains an unfilled required tool parameter.",
+        settings=Settings(data_dir=str(tmp_path / "data"), output_dir=str(output_dir)),
+        steps=[
+            DiagnosticsAndSkillMetricsStep(
+                id="stats",
+                tool="compute_summary_stats",
+                params={"timeseries_file": "UNKNOWN"},
+            )
+        ],
+    )
+
+    async with Client(mcp_server.mcp) as client:
+        with pytest.raises(ToolError, match="stats.timeseries_file is a placeholder"):
+            await client.call_tool("execute_workflow", {"workflow": workflow.model_dump()})
+
+    assert not output_dir.exists()
+
+
 async def test_plan_workflow_over_mcp_uses_structured_workflow(tmp_path, monkeypatch):
     expected_settings = Settings(
         data_dir=str(tmp_path / "data"), output_dir=str(tmp_path / "output")

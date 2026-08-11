@@ -28,9 +28,9 @@ For a local MCP client, configure the server as a stdio subprocess:
 {
   "mcpServers": {
     "esmflow": {
-      "command": "/home/vega679/git/esflow/esflow-v2/.venv/bin/python",
-      "args": ["/home/vega679/git/esflow/esflow-v2/mcp_server.py"],
-      "cwd": "/home/vega679/git/esflow/esflow-v2"
+      "command": "/path/to/esflow-v2/.venv/bin/python",
+      "args": ["/path/to/esflow-v2/mcp_server.py"],
+      "cwd": "/path/to/esflow-v2"
     }
   }
 }
