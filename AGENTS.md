@@ -39,20 +39,30 @@ web app.
   each constrained to a `Literal[...]` tool subset defined on a `Step` subclass
   in `common/workflow.py` — Pydantic enforces the tool allow-list per category,
   not the prompt.
+- Each domain module (`agents/domain/{data_discovery,extraction,diagnostics,
+  water_cycle,visualization}.py`) is a thin wrapper around
+  `agents/domain/_factory.py::make_domain_subagent(step_type, subagent_name,
+  result_label, tool_name, description)`, which builds the `Agent` (with
+  `output_type=list[step_type]`) and its `call_*` tool function. Add a new
+  category by calling the factory, not by copy-pasting a module.
 - **The tool catalog (`tools/tool_catalog.yaml`) is generated, not hand-edited.**
   Source of truth is the `@esmflow_tool` decorator + `ToolSpec`/`Param` in
   `tools/core/base.py`, attached to each tool module under
   `tools/{fetchers,loaders,matchers,extractors,analyzers,plotters}/`. Regenerate
   after adding/changing a tool: `python tools/generate_catalog.py --overwrite`
-  (run from repo root or adjust `tools_dir`). `common/config.load_prompt()`
-  inlines this YAML into every agent's system prompt, so a stale catalog
-  silently desyncs prompts from actual tool behavior.
-- **Workflow execution is dynamic-import based** (`common/workflow_runner.py`):
-  tools are loaded by filename lookup in the catalog/category dirs, params are
+  (paths are resolved relative to the script itself, so it works from any CWD).
+  `common/config.load_prompt()` inlines this YAML into every agent's system
+  prompt, so a stale catalog silently desyncs prompts from actual tool behavior.
+- **Workflow execution is dynamic-import based and Python-API only**
+  (`common/workflow_runner.py`): there is no CLI entrypoint (no `run_workflow.py`,
+  no argparse) — call `run_workflow_definition()`/`run_workflow_file()` directly
+  from Python (as `agents/planner/oneshot_planner_executor.py` and the evals do).
+  Tools are loaded by filename lookup in the catalog/category dirs, params are
   resolved via `${step_id.outputs.key}` / `${settings.key}` string interpolation
   against a runtime `context` dict, and declared output filenames are used to
   rename whatever file the tool actually returned. A step with no declared
-  `outputs` is always treated as not-yet-done (relevant for `--reuse`/`start_from`).
+  `outputs` is always treated as not-yet-done (relevant to the `start_from`/
+  `reuse` kwargs on those functions, which skip/resume previously-run steps).
 - Planner/executor tools (`check_completeness`, `run_workflow_validation` in
   `agents/planner/planner_tools.py`) must both pass before `execute_planned_workflow`
   will run — the agent is instructed to call these itself; don't assume the
@@ -73,6 +83,14 @@ web app.
   `ValueError` unless prefixed `output_` or named `output_dir`.
 - `list[int]` params accept `"2000-2005"` range syntax or comma lists; a bare
   numeric string like `"2000"` is a common LLM mistake the validator flags.
+- No lint/format/typecheck/pre-commit/CI config exists in this repo (no
+  ruff/black/mypy/pyright config, no `.github/workflows`). Don't assume or
+  invent a check command; `pytest` is the only automated verification.
+- `system_prompt.md` is load-bearing — `common/config.load_prompt()` reads it
+  and concatenates it with the generated tool catalog into every subagent's
+  system prompt. `tool_subagent_mapping.md` is a human-facing design doc only;
+  it isn't loaded by any code path and can drift from `common/workflow.py`'s
+  actual `Literal[...]` tool lists without breaking anything.
 
 ## Testing / evals
 
@@ -83,13 +101,9 @@ web app.
   they skip automatically when either dataset is unavailable.
 - `pydantic_evals` datasets under `evals/` remain the separate live-LLM evaluation
   harnesses for planner behavior and end-to-end workflow quality.
-- **`README.md`'s `python -m evals.evals` command does not exist** — the real
-  entrypoints are:
+- Real eval entrypoints (run from the repository root):
   - `python -m evals.validate_workflow_eval` — checks the one-shot planner
-    produces catalog-valid workflows. Currently broken: it points at
-    `./evals/task_0N_*.txt`, but those prompt files live under
-    `evals/protocol_prompts/`; fix the `Case(inputs=...)` paths before trusting
-    this eval's output.
+    produces catalog-valid workflows.
   - `python evals/workflow_execution_numerical_tolerance_eval.py` — plans,
     executes, and numerically grades (rtol=1e-12) full workflows per
     (model, task) against references in `evals/reference_workflows/results/`.
