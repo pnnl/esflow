@@ -39,6 +39,17 @@ web app.
   each constrained to a `Literal[...]` tool subset defined on a `Step` subclass
   in `common/workflow.py` — Pydantic enforces the tool allow-list per category,
   not the prompt.
+- **`mcp_server.py` is a third, stateless entrypoint** for MCP clients. It
+  exposes plan, validation, execution, and combined plan-and-execute tools over
+  stdio using FastMCP. Unlike `app.py`'s process-global `WorkflowState`, each
+  MCP call receives or returns the complete `Workflow`; it reuses the same
+  plain-argument planning and runner APIs used by the evals. The "check
+  completeness -> validate -> write plan -> run" gate sequence is independently
+  implemented in `execute_planned_workflow`
+  (`agents/planner/oneshot_planner_executor.py`) and `execute_workflow`
+  (`mcp_server.py`); both use the shared validation helpers but own their
+  ordering. Update both call sites if this sequence changes; extract a shared
+  helper if a third entrypoint needs the same sequence.
 - Each domain module (`agents/domain/{data_discovery,extraction,diagnostics,
   water_cycle,visualization}.py`) is a thin wrapper around
   `agents/domain/_factory.py::make_domain_subagent(step_type, subagent_name,

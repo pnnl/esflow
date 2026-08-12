@@ -5,6 +5,7 @@ import yaml
 
 from common.workflow_validation import (
     _catalog_singletons,
+    check_completeness,
     load_raw_catalog,
     load_tool_specs,
     validate_workflow,
@@ -22,6 +23,7 @@ def catalog_path(tmp_path) -> Path:
                         "name": "example",
                         "inputs": {
                             "required_value": {"required": True, "type": "str"},
+                            "optional_value": {"required": False, "type": "str"},
                             "years": {"required": False, "type": "list[int]"},
                         },
                     }
@@ -76,3 +78,52 @@ def test_validate_workflow_reports_duplicate_ids_and_accepts_valid_config(catalo
         ]
     }
     assert validate_workflow(duplicate, catalog_path) == ["Duplicate step id: 'same'"]
+
+
+def test_check_completeness_reports_invalid_values_and_unknown_outputs(catalog_path):
+    workflow = {
+        "steps": [
+            {
+                "id": "stats",
+                "tool": "example",
+                "params": {
+                    "required_value": "",
+                    "optional_value": "",
+                    "null_value": None,
+                    "placeholder": "TBD",
+                    "missing": "${other.outputs.file}",
+                    "data_dir": "${settings.data_dir}",
+                },
+            }
+        ]
+    }
+
+    assert check_completeness(workflow, catalog_path) == [
+        "stats.required_value is empty",
+        "stats.null_value is null",
+        "stats.placeholder is a placeholder",
+        "stats.missing references unknown output '${other.outputs.file}'",
+    ]
+
+
+def test_check_completeness_accepts_known_output_references(catalog_path):
+    workflow = {
+        "steps": [
+            {
+                "id": "source",
+                "tool": "example",
+                "params": {"required_value": "source"},
+                "outputs": {"result": "source.csv"},
+            },
+            {
+                "id": "stats",
+                "tool": "example",
+                "params": {
+                    "required_value": "${source.outputs.result}",
+                    "optional_value": "",
+                },
+            },
+        ]
+    }
+
+    assert check_completeness(workflow, catalog_path) == []

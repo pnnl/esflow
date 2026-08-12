@@ -12,7 +12,11 @@ from .planner_tools import check_completeness, run_workflow_validation
 from common import WorkflowState
 from common.config import load_prompt, model
 from common.workflow import Settings, Workflow
-from common.workflow_runner import run_workflow_definition
+from common.workflow_runner import (
+    ExecutionStepStatus,
+    run_workflow_definition,
+    step_statuses_from_execution_context,
+)
 
 
 ONESHOT_PLANNER_EXECUTOR_PROMPT = (
@@ -28,14 +32,6 @@ ONESHOT_PLANNER_EXECUTOR_PROMPT = (
     "After planning succeeds, call execute_planned_workflow in the same pass. "
     "Return the PlannerExecutorResult from execute_planned_workflow as the final answer."
 )
-
-
-class ExecutionStepStatus(BaseModel):
-    """Structured execution status for one workflow step."""
-
-    step_id: str
-    status: Literal["completed", "failed", "reused", "skipped"]
-    error: str | None = None
 
 
 class PlannerExecutorResult(BaseModel):
@@ -103,31 +99,6 @@ async def plan_with_planner(ctx: RunContext[WorkflowState], task: str) -> str:
     return result.output
 
 
-def _step_statuses_from_execution_context(
-    workflow: Workflow, execution_context: dict
-) -> list[ExecutionStepStatus]:
-    """Convert workflow runner context into structured per-step statuses."""
-    step_statuses: list[ExecutionStepStatus] = []
-    for step in workflow.steps:
-        step_state = execution_context.get(step.id, {})
-        result = step_state.get("result", {})
-        if result.get("error"):
-            step_statuses.append(
-                ExecutionStepStatus(
-                    step_id=step.id,
-                    status="failed",
-                    error=result["error"],
-                )
-            )
-        elif result.get("reused"):
-            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="reused"))
-        elif result.get("skipped"):
-            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="skipped"))
-        else:
-            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="completed"))
-    return step_statuses
-
-
 async def execute_planned_workflow(ctx: RunContext[WorkflowState]) -> PlannerExecutorResult:
     """Execute the currently planned workflow via the shared workflow runner."""
     if not ctx.deps.workflow.steps:
@@ -188,7 +159,7 @@ async def execute_planned_workflow(ctx: RunContext[WorkflowState]) -> PlannerExe
         status="executed",
         message=message,
         workflow=ctx.deps.workflow,
-        step_statuses=_step_statuses_from_execution_context(ctx.deps.workflow, execution_context),
+        step_statuses=step_statuses_from_execution_context(ctx.deps.workflow, execution_context),
         output_dir=str(resolved_output_dir),
         workflow_file=str(workflow_path),
         plot_images=plot_urls,

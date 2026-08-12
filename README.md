@@ -7,6 +7,35 @@ Set `WEB_AGENT_MODE` in `.env` to choose which chat agent the web app serves:
 - `WEB_AGENT_MODE=planner` for the interactive multistep planner
 - `WEB_AGENT_MODE=planner_executor` for the interactive multistep planner-executor
 
+## Running the MCP server
+
+Install the application dependencies, including `fastmcp`, then run the stateless
+stdio server from the repository root:
+
+```bash
+.venv/bin/python mcp_server.py
+```
+
+The server requires the same `.env` configuration as the web app, including
+`AI_INCUBATOR_KEY`. It exposes `plan_workflow`, `validate_workflow`,
+`execute_workflow`, and `plan_and_execute_workflow`. For separate planning and
+execution, pass the complete workflow returned by `plan_workflow` to the next
+tool call; the server does not retain workflow state between requests.
+
+For a local MCP client, configure the server as a stdio subprocess:
+
+```json
+{
+  "mcpServers": {
+    "esmflow": {
+      "command": "/path/to/esflow-v2/.venv/bin/python",
+      "args": ["/path/to/esflow-v2/mcp_server.py"],
+      "cwd": "/path/to/esflow-v2"
+    }
+  }
+}
+```
+
 Here is a sample query you can you to interact with the chatbot
 
 ```

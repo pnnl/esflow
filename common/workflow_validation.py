@@ -7,6 +7,7 @@ import yaml
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 _catalog_singletons: dict[Path, dict] = {}
+_PLACEHOLDER_TOKENS = {"UNKNOWN", "<UNKNOWN>", "TBD", "N/A", "NONE", "NULL"}
 
 
 def _read_catalog_yaml(resolved_path: Path) -> dict:
@@ -36,6 +37,42 @@ def load_tool_specs(catalog_path: Path | None = None) -> dict[str, dict]:
     """Return the tool catalog keyed by tool name, or {} if the catalog is missing."""
     catalog = load_raw_catalog(catalog_path)
     return {t["name"]: t for t in catalog.get("tools", [])}
+
+
+def check_completeness(workflow: dict, catalog_path: Path | None = None) -> list[str]:
+    """List unfilled params and dangling output references in a workflow dict."""
+    gaps: list[str] = []
+    tool_specs = load_tool_specs(catalog_path)
+    steps = workflow.get("steps", [])
+    known_outputs = {
+        f"{step.get('id', f'step_{index}')}.outputs.{key}"
+        for index, step in enumerate(steps)
+        for key in step.get("outputs", {})
+    }
+
+    for index, step in enumerate(steps):
+        step_id = step.get("id", f"step_{index}")
+        tool_name = step.get("tool", "")
+        params = step.get("params", step.get("config", {}))
+        for key, value in params.items():
+            if value is None:
+                gaps.append(f"{step_id}.{key} is null")
+            elif isinstance(value, str):
+                stripped = value.strip()
+                if stripped.upper() in _PLACEHOLDER_TOKENS:
+                    gaps.append(f"{step_id}.{key} is a placeholder")
+                elif stripped == "":
+                    input_spec = tool_specs.get(tool_name, {}).get("inputs", {}).get(key)
+                    if input_spec is None or input_spec.get("required", False):
+                        gaps.append(f"{step_id}.{key} is empty")
+                elif stripped.startswith("${") and stripped.endswith("}"):
+                    reference = stripped[2:-1]
+                    if not reference.startswith("settings.") and reference not in known_outputs:
+                        gaps.append(
+                            f"{step_id}.{key} references unknown output '{value}'"
+                        )
+
+    return gaps
 
 
 def validate_workflow(workflow: dict, catalog_path: Path | None = None) -> list[str]:

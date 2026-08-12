@@ -1,11 +1,8 @@
 from pathlib import Path
 
-from agents.planner.oneshot_planner_executor import (
-    _collect_plot_urls,
-    _plot_url,
-    _step_statuses_from_execution_context,
-)
+from agents.planner.oneshot_planner_executor import _collect_plot_urls, _plot_url
 from common.workflow import DataDiscoveryStep, DiagnosticVisualizationStep
+from common.workflow_runner import step_statuses_from_execution_context
 
 
 def test_plot_url_only_exposes_files_under_output(monkeypatch, tmp_path):
@@ -54,7 +51,7 @@ def test_step_statuses_prioritize_errors_and_preserve_runner_states(workflow_sta
         "skipped": {"result": {"skipped": True}},
     }
 
-    statuses = _step_statuses_from_execution_context(workflow_state.workflow, context)
+    statuses = step_statuses_from_execution_context(workflow_state.workflow, context)
     assert [(status.step_id, status.status, status.error) for status in statuses] == [
         ("completed", "completed", None),
         ("failed", "failed", "failed to load"),

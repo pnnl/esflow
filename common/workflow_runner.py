@@ -10,15 +10,51 @@ import re
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import yaml
+from pydantic import BaseModel
 
+from common.workflow import Workflow
 from common.workflow_validation import load_raw_catalog, validate_workflow
 
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 logger = logging.getLogger(__name__)
+
+
+class ExecutionStepStatus(BaseModel):
+    """Structured execution status for one workflow step."""
+
+    step_id: str
+    status: Literal["completed", "failed", "reused", "skipped"]
+    error: str | None = None
+
+
+def step_statuses_from_execution_context(
+    workflow: Workflow, execution_context: dict
+) -> list[ExecutionStepStatus]:
+    """Convert workflow runner context into structured per-step statuses."""
+    step_statuses: list[ExecutionStepStatus] = []
+    for step in workflow.steps:
+        step_state = execution_context.get(step.id, {})
+        result = step_state.get("result", {})
+        if result.get("error"):
+            step_statuses.append(
+                ExecutionStepStatus(
+                    step_id=step.id,
+                    status="failed",
+                    error=result["error"],
+                )
+            )
+        elif result.get("reused"):
+            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="reused"))
+        elif result.get("skipped"):
+            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="skipped"))
+        else:
+            step_statuses.append(ExecutionStepStatus(step_id=step.id, status="completed"))
+    return step_statuses
 
 
 warnings.filterwarnings(
@@ -333,6 +369,7 @@ run_workflow = run_workflow_file
 
 
 __all__ = [
+    'ExecutionStepStatus',
     'check_step_outputs',
     'load_tool',
     'load_workflow_file',
@@ -340,5 +377,6 @@ __all__ = [
     'run_workflow',
     'run_workflow_definition',
     'run_workflow_file',
+    'step_statuses_from_execution_context',
     'validate_workflow',
 ]
