@@ -53,6 +53,11 @@ web app.
   (paths are resolved relative to the script itself, so it works from any CWD).
   `common/config.load_prompt()` inlines this YAML into every agent's system
   prompt, so a stale catalog silently desyncs prompts from actual tool behavior.
+  `common.workflow_validation.load_raw_catalog()` loads the generated catalog
+  from disk once per resolved path, then reuses that dict for the rest of the
+  process (a lazy singleton, not an LRU/TTL cache; nothing is evicted or
+  considered stale). Restart long-lived processes after regenerating
+  `tool_catalog.yaml`.
 - **Workflow execution is dynamic-import based and Python-API only**
   (`common/workflow_runner.py`): there is no CLI entrypoint (no `run_workflow.py`,
   no argparse) — call `run_workflow_definition()`/`run_workflow_file()` directly

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from common.workflow_validation import validate_workflow
+from common.workflow_validation import load_raw_catalog, validate_workflow
 
 
 _HERE = Path(__file__).resolve().parent
@@ -149,9 +149,15 @@ def run_workflow_definition(
     verbose: bool = False,
     start_from: str = None,
     reuse: bool = False,
+    catalog_path: Path | None = None,
+    tools_dir: Path | None = None,
 ):
     """Execute a workflow definition provided as a Python dict."""
     workflow_path = Path(workflow_path)
+    if catalog_path is None:
+        catalog_path = _REPO_ROOT / 'tools' / 'tool_catalog.yaml'
+    if tools_dir is None:
+        tools_dir = _REPO_ROOT / 'tools'
     workflow_name = workflow.get('name', workflow_path.stem)
 
     logger.info(
@@ -161,7 +167,7 @@ def run_workflow_definition(
         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     )
 
-    errors = validate_workflow(workflow, _REPO_ROOT / 'tools' / 'tool_catalog.yaml')
+    errors = validate_workflow(workflow, catalog_path)
     if errors:
         logger.error("Workflow validation failed:")
         for err in errors:
@@ -172,9 +178,7 @@ def run_workflow_definition(
 
     steps = workflow.get('steps', [])
 
-    catalog_path = _REPO_ROOT / 'tools' / 'tool_catalog.yaml'
-    with open(catalog_path) as f:
-        catalog = yaml.safe_load(f)
+    catalog = load_raw_catalog(catalog_path)
 
     settings = workflow.get('settings', {})
     output_dir = Path(settings.get('output_dir', './output'))
@@ -222,7 +226,7 @@ def run_workflow_definition(
         logger.info("[%s/%s] %s: %s", i + 1, total_steps, step_id, tool_name)
 
         try:
-            tool_module = load_tool(tool_name, catalog=catalog)
+            tool_module = load_tool(tool_name, catalog=catalog, tools_dir=tools_dir)
             raw_params = step.get('params', step.get('config', {}))
             params = resolve_references(raw_params, context)
 
@@ -309,6 +313,8 @@ def run_workflow_file(
     verbose: bool = False,
     start_from: str = None,
     reuse: bool = False,
+    catalog_path: Path | None = None,
+    tools_dir: Path | None = None,
 ):
     """Load and execute a workflow YAML file."""
     workflow, resolved_path = load_workflow_file(workflow_path)
@@ -318,6 +324,8 @@ def run_workflow_file(
         verbose=verbose,
         start_from=start_from,
         reuse=reuse,
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
     )
 
 

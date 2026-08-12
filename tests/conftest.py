@@ -7,11 +7,20 @@ from pydantic_ai.usage import RunUsage
 
 from common import WorkflowState
 from common.workflow import Settings, Workflow
+from common.workflow_validation import _catalog_singletons
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DATA_DIR = REPO_ROOT / "data" / "sample"
 REFERENCE_RESULTS_DIR = REPO_ROOT / "evals" / "reference_workflows" / "results"
+
+
+@pytest.fixture(autouse=True)
+def _reset_catalog_singletons():
+    """Ensure catalog state from one test cannot affect another."""
+    _catalog_singletons.clear()
+    yield
+    _catalog_singletons.clear()
 
 
 @pytest.fixture

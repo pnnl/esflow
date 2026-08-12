@@ -14,6 +14,7 @@ from common.workflow_runner import (
     run_workflow_file,
     validate_workflow,
 )
+from common.workflow_validation import _catalog_singletons
 
 
 def test_resolve_references_preserves_native_type_for_full_references():
@@ -60,7 +61,7 @@ def test_load_tool_uses_catalog_path_and_requires_run_function(tmp_path):
         load_tool("missing", catalog, tools_dir)
 
 
-def test_runner_renames_declared_outputs_and_reuses_them(tmp_path, monkeypatch):
+def test_runner_renames_declared_outputs_and_reuses_them(tmp_path):
     output_dir = tmp_path / "output"
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
@@ -84,21 +85,49 @@ def test_runner_renames_declared_outputs_and_reuses_them(tmp_path, monkeypatch):
         "steps": [{"id": "write", "tool": "stub", "params": {}, "outputs": {"result": "declared.csv"}}],
     }
 
-    from common import workflow_runner
-
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
-    context = run_workflow_definition(workflow)
+    context = run_workflow_definition(
+        workflow,
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
+    )
     declared_file = output_dir / "declared.csv"
     assert declared_file.read_text() == "value\n1\n"
     assert context["write"]["outputs"] == {"result": str(declared_file)}
 
-    reused = run_workflow_definition(workflow, reuse=True)
+    reused = run_workflow_definition(
+        workflow,
+        reuse=True,
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
+    )
     assert reused["write"]["result"] == {"reused": True}
 
 
-def test_runner_writes_no_output_to_stdout(tmp_path, monkeypatch):
-    from common import workflow_runner
+def test_runner_loads_catalog_once_for_validation_and_tool_loading(tmp_path):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "stub.py").write_text(
+        "from pathlib import Path\n"
+        "def run(config):\n"
+        "    output = Path(config['output_dir']) / 'result.txt'\n"
+        "    output.write_text('ok')\n"
+        "    return {'result': str(output)}\n"
+    )
+    catalog_path = tools_dir / "tool_catalog.yaml"
+    catalog_path.write_text(
+        yaml.safe_dump({"tools": [{"name": "stub", "path": "stub.py", "inputs": {}, "outputs": {}}]})
+    )
+    workflow = {
+        "settings": {"output_dir": str(tmp_path / "output")},
+        "steps": [{"id": "step", "tool": "stub", "params": {}, "outputs": {"result": "result.txt"}}],
+    }
 
+    run_workflow_definition(workflow, catalog_path=catalog_path, tools_dir=tools_dir)
+
+    assert list(_catalog_singletons) == [catalog_path.resolve()]
+
+
+def test_runner_writes_no_output_to_stdout(tmp_path):
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "stub.py").write_text(
@@ -115,26 +144,33 @@ def test_runner_writes_no_output_to_stdout(tmp_path, monkeypatch):
         "settings": {"output_dir": str(tmp_path / "output")},
         "steps": [{"id": "step", "tool": "stub", "params": {}, "outputs": {"result": "result.txt"}}],
     }
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
     stdout = io.StringIO()
 
     with contextlib.redirect_stdout(stdout):
-        context = run_workflow_definition(workflow)
+        context = run_workflow_definition(
+            workflow,
+            catalog_path=tools_dir / "tool_catalog.yaml",
+            tools_dir=tools_dir,
+        )
 
     assert stdout.getvalue() == ""
     assert context["step"]["outputs"] == {"result": str(tmp_path / "output" / "result.txt")}
 
 
-def test_runner_returns_none_when_validation_fails(tmp_path, monkeypatch):
-    from common import workflow_runner
+def test_runner_returns_none_when_validation_fails(tmp_path):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    catalog_path = tools_dir / "tool_catalog.yaml"
+    catalog_path.write_text(yaml.safe_dump({"tools": []}))
 
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
-    assert run_workflow_definition({"name": "invalid", "steps": []}) is None
+    assert run_workflow_definition(
+        {"name": "invalid", "steps": []},
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
+    ) is None
 
 
-def test_runner_start_from_marks_prior_steps_skipped_and_rejects_unknown_step(tmp_path, monkeypatch):
-    from common import workflow_runner
-
+def test_runner_start_from_marks_prior_steps_skipped_and_rejects_unknown_step(tmp_path):
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "stub.py").write_text(
@@ -154,17 +190,24 @@ def test_runner_start_from_marks_prior_steps_skipped_and_rejects_unknown_step(tm
             {"id": "second", "tool": "stub", "params": {}, "outputs": {"result": "second.txt"}},
         ],
     }
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
-
-    context = run_workflow_definition(workflow, start_from="second")
+    catalog_path = tools_dir / "tool_catalog.yaml"
+    context = run_workflow_definition(
+        workflow,
+        start_from="second",
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
+    )
     assert context["first"]["result"] == {"skipped": True}
     assert (tmp_path / "output" / "second.txt").read_text() == "ran"
-    assert run_workflow_definition(workflow, start_from="missing") is None
+    assert run_workflow_definition(
+        workflow,
+        start_from="missing",
+        catalog_path=catalog_path,
+        tools_dir=tools_dir,
+    ) is None
 
 
-def test_runner_records_tool_errors_continues_and_can_reuse_created_outputs(tmp_path, monkeypatch):
-    from common import workflow_runner
-
+def test_runner_records_tool_errors_continues_and_can_reuse_created_outputs(tmp_path):
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "fail.py").write_text(
@@ -197,17 +240,18 @@ def test_runner_records_tool_errors_continues_and_can_reuse_created_outputs(tmp_
             {"id": "succeeded", "tool": "succeed", "params": {}, "outputs": {"result": "success.txt"}},
         ],
     }
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
-
-    context = run_workflow_definition(workflow, reuse=True)
+    context = run_workflow_definition(
+        workflow,
+        reuse=True,
+        catalog_path=tools_dir / "tool_catalog.yaml",
+        tools_dir=tools_dir,
+    )
     assert context["failed"]["result"] == {"error": "expected failure"}
     assert context["failed"]["outputs"] == {"result": str(tmp_path / "output" / "fallback.txt")}
     assert context["succeeded"]["result"] == {"result": str(tmp_path / "output" / "actual.txt")}
 
 
-def test_workflow_file_helpers_load_and_run_yaml_definition(tmp_path, monkeypatch):
-    from common import workflow_runner
-
+def test_workflow_file_helpers_load_and_run_yaml_definition(tmp_path):
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "stub.py").write_text(
@@ -227,10 +271,12 @@ def test_workflow_file_helpers_load_and_run_yaml_definition(tmp_path, monkeypatc
     }
     workflow_path = tmp_path / "workflow.yaml"
     workflow_path.write_text(yaml.safe_dump(workflow))
-    monkeypatch.setattr(workflow_runner, "_REPO_ROOT", tmp_path)
-
     assert load_workflow_file(workflow_path) == (workflow, workflow_path)
-    assert run_workflow_file(workflow_path)["step"]["outputs"] == {
+    assert run_workflow_file(
+        workflow_path,
+        catalog_path=tools_dir / "tool_catalog.yaml",
+        tools_dir=tools_dir,
+    )["step"]["outputs"] == {
         "result": str(tmp_path / "output" / "result.txt")
     }
     with pytest.raises(FileNotFoundError, match="Workflow not found"):
