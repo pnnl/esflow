@@ -90,6 +90,13 @@ async def execute_workflow(
     if errors:
         raise ValueError("Workflow failed catalog validation:\n- " + "\n- ".join(errors))
 
+    if start_from is not None:
+        step_ids = {step.id for step in workflow.steps}
+        if start_from not in step_ids:
+            raise ValueError(
+                f"start_from step '{start_from}' not found in workflow steps: {sorted(step_ids)}"
+            )
+
     output_dir = Path(workflow.settings.output_dir)
     workflow_file = output_dir / "workflow.yaml"
     workflow.write_to_file(workflow_file)

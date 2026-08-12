@@ -108,6 +108,21 @@ async def test_execute_workflow_blocks_placeholder_values_before_writing_files(t
     assert not output_dir.exists()
 
 
+async def test_execute_workflow_rejects_unknown_start_from_before_writing_files(tmp_path):
+    output_dir = tmp_path / "output"
+    workflow = _stats_workflow(tmp_path)
+    workflow.settings.output_dir = str(output_dir)
+
+    async with Client(mcp_server.mcp) as client:
+        with pytest.raises(ToolError, match="start_from step 'missing' not found"):
+            await client.call_tool(
+                "execute_workflow",
+                {"workflow": workflow.model_dump(), "start_from": "missing"},
+            )
+
+    assert not output_dir.exists()
+
+
 async def test_plan_workflow_over_mcp_uses_structured_workflow(tmp_path, monkeypatch):
     expected_settings = Settings(
         data_dir=str(tmp_path / "data"), output_dir=str(tmp_path / "output")
