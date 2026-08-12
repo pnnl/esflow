@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from common.workflow_validation import load_tool_specs, validate_workflow
+from common.workflow_validation import (
+    _catalog_singletons,
+    load_raw_catalog,
+    load_tool_specs,
+    validate_workflow,
+)
 
 
 @pytest.fixture
@@ -29,6 +34,24 @@ def catalog_path(tmp_path) -> Path:
 
 def test_load_tool_specs_returns_empty_for_missing_catalog(tmp_path):
     assert load_tool_specs(tmp_path / "missing.yaml") == {}
+
+
+def test_load_raw_catalog_loads_once_per_resolved_path(catalog_path):
+    first = load_raw_catalog(catalog_path)
+    second = load_raw_catalog(catalog_path)
+
+    assert first is second
+    assert list(_catalog_singletons) == [catalog_path.resolve()]
+
+
+def test_load_raw_catalog_uses_one_singleton_for_relative_and_resolved_paths(catalog_path, monkeypatch):
+    monkeypatch.chdir(catalog_path.parent)
+
+    relative = load_raw_catalog(Path(catalog_path.name))
+    resolved = load_raw_catalog(catalog_path.resolve())
+
+    assert relative is resolved
+    assert list(_catalog_singletons) == [catalog_path.resolve()]
 
 
 @pytest.mark.parametrize(

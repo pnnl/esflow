@@ -6,19 +6,35 @@ import yaml
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
+_catalog_singletons: dict[Path, dict] = {}
 
 
-def load_tool_specs(catalog_path: Path | None = None) -> dict[str, dict]:
-    """Return the tool catalog keyed by tool name, or {} if the catalog is missing."""
+def _read_catalog_yaml(resolved_path: Path) -> dict:
+    """Load one static catalog file at most once per resolved path and process."""
+    if resolved_path not in _catalog_singletons:
+        with open(resolved_path) as f:
+            _catalog_singletons[resolved_path] = yaml.safe_load(f) or {}
+    return _catalog_singletons[resolved_path]
+
+
+def load_raw_catalog(catalog_path: Path | None = None) -> dict:
+    """Return parsed catalog YAML loaded once per resolved path and process.
+
+    The generated catalog is static while the application runs. Regenerate it
+    before starting a process, then restart to load a newer version.
+    """
     if catalog_path is None:
         catalog_path = _REPO_ROOT / "tools" / "tool_catalog.yaml"
 
     if not catalog_path.exists():
         return {}
 
-    with open(catalog_path) as f:
-        catalog = yaml.safe_load(f)
+    return _read_catalog_yaml(catalog_path.resolve())
 
+
+def load_tool_specs(catalog_path: Path | None = None) -> dict[str, dict]:
+    """Return the tool catalog keyed by tool name, or {} if the catalog is missing."""
+    catalog = load_raw_catalog(catalog_path)
     return {t["name"]: t for t in catalog.get("tools", [])}
 
 
