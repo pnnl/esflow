@@ -41,9 +41,10 @@ web app.
   not the prompt.
 - **`mcp_server.py` is a third, stateless entrypoint** for MCP clients. It
   exposes plan, validation, execution, and combined plan-and-execute tools over
-  stdio using FastMCP. Unlike `app.py`'s process-global `WorkflowState`, each
-  MCP call receives or returns the complete `Workflow`; it reuses the same
-  plain-argument planning and runner APIs used by the evals. The "check
+  FastMCP; Docker configures HTTP transport, while direct execution defaults to
+  stdio. Unlike `app.py`'s process-global `WorkflowState`, each MCP call
+  receives or returns the complete `Workflow`; it reuses the same plain-argument
+  planning and runner APIs used by the evals. The "check
   completeness -> validate -> write plan -> run" gate sequence is independently
   implemented in `execute_planned_workflow`
   (`agents/planner/oneshot_planner_executor.py`) and `execute_workflow`

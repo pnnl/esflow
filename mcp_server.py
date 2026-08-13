@@ -1,4 +1,8 @@
-"""Stateless stdio MCP server for planning and executing ESMFlow workflows."""
+"""Stateless MCP server for planning and executing ESMFlow workflows.
+
+Docker configures FastMCP to serve HTTP; direct execution retains FastMCP's
+default stdio transport.
+"""
 
 from __future__ import annotations
 
