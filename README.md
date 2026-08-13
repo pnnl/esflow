@@ -9,28 +9,70 @@ Set `WEB_AGENT_MODE` in `.env` to choose which chat agent the web app serves:
 
 ## Running the MCP server
 
-Install the application dependencies, including `fastmcp`, then run the stateless
-stdio server from the repository root:
+Build the MCP server image from the repository root:
 
 ```bash
-.venv/bin/python mcp_server.py
+docker build -t esmflow-mcp .
 ```
 
-The server requires the same `.env` configuration as the web app, including
-`AI_INCUBATOR_KEY`. It exposes `plan_workflow`, `validate_workflow`,
+Create the local directories that the container will access:
+
+```bash
+mkdir -p data output
+```
+
+The container runs as a non-root user with UID 1000. If your host user's UID
+is not 1000 (check with `id -u`), run `chmod o+rwx data output` so the container
+can write to these bind-mounted directories; the directories contain only local
+datasets and generated outputs.
+
+Run the MCP server as a detached HTTP service, passing the same `.env`
+configuration used by the web app and mounting local data and output directories:
+
+```bash
+docker run -d --name esmflow-mcp \
+  --env-file .env \
+  -p 127.0.0.1:8000:8000 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/output:/app/output" \
+  esmflow-mcp
+```
+
+The `.env` file must include `AI_INCUBATOR_KEY`. The server listens at
+`http://127.0.0.1:8000/mcp` and exposes `plan_workflow`, `validate_workflow`,
 `execute_workflow`, and `plan_and_execute_workflow`. For separate planning and
 execution, pass the complete workflow returned by `plan_workflow` to the next
 tool call; the server does not retain workflow state between requests.
 
-For a local MCP client, configure the server as a stdio subprocess:
+The port is published only on the loopback interface because the server has no
+authentication. Do not change `-p 127.0.0.1:8000:8000` to a network-accessible
+port binding without adding authentication.
+
+Inspect the running server with `docker logs esmflow-mcp`. Stop and remove it
+with:
+
+```bash
+docker stop esmflow-mcp && docker rm esmflow-mcp
+```
+
+After local source changes, including regenerated `tools/tool_catalog.yaml`,
+replace the running container before starting the rebuilt image:
+
+```bash
+docker stop esmflow-mcp && docker rm esmflow-mcp
+docker build -t esmflow-mcp .
+```
+
+Then run the `docker run` command above.
+
+For a local MCP client, configure the HTTP endpoint:
 
 ```json
 {
   "mcpServers": {
     "esmflow": {
-      "command": "/path/to/esflow-v2/.venv/bin/python",
-      "args": ["/path/to/esflow-v2/mcp_server.py"],
-      "cwd": "/path/to/esflow-v2"
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }

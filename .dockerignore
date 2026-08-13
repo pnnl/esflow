@@ -1,0 +1,9 @@
+.git
+.venv
+.env
+.DS_Store
+__pycache__/
+*.py[cod]
+data/
+output/
+evals/reference_workflows/results/
