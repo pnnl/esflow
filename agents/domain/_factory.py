@@ -4,7 +4,7 @@ from typing import Type
 
 from pydantic_ai import Agent, RunContext
 
-from common import WorkflowState, _with_context
+from common import WorkflowState, _model_override, _with_context
 from common.config import load_prompt, model
 from common.workflow import Step
 
@@ -28,7 +28,10 @@ def make_domain_subagent(
     )
 
     async def call(ctx: RunContext[WorkflowState], task: str) -> str:
-        result = await agent.run(_with_context(ctx.deps, task))
+        run_kwargs = {}
+        if _model_override.get() is not None:
+            run_kwargs["model"] = _model_override.get()
+        result = await agent.run(_with_context(ctx.deps, task), **run_kwargs)
         ctx.deps.workflow.steps.extend(result.output)
         return f"Added {len(result.output)} {result_label} step(s): {[s.id for s in result.output]}"
 

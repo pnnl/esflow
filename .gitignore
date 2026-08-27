@@ -7,3 +7,4 @@ data
 CLAUDE.md
 .claude
 evals/reference_workflows/results
+/benchmark/results

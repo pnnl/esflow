@@ -133,3 +133,54 @@ web app.
     Requires `./data/sample` to exist locally.
 - `requirements-eval.txt` (just `pydantic-evals`) is separate from
   `requirements.txt`; install both to run evals.
+
+## Benchmark
+
+- `benchmark/` replicates the paper's protocol-versus-free-code comparison using
+  the seven prompts under `benchmark/protocol/` and `benchmark/baselines/`.
+  Protocol runs use the one-shot planner; baseline runs generate arbitrary Python
+  and execute it in the Docker sandbox, with read-only sample data, CPU/memory/
+  process limits, and a per-run writable output mount.
+- Network is disabled (`--network=none`) for baseline containers **except**
+  `task_03_et_benchmark` and `task_07_integrated_diagnostic`
+  (`NETWORK_REQUIRED_TASKS` in `benchmark/common.py`): those two tasks call
+  `fetch_ilamb_data`, which downloads from `https://www.ilamb.org` with no
+  offline cache, so their containers get full outbound network access instead
+  of a narrower domain allow-list. Protocol-mode workflows always execute
+  unsandboxed on the host and already have network access, so this keeps the
+  two conditions comparable for those tasks. The sandbox image also pre-fetches
+  the 110m-resolution Natural Earth shapefiles (land/ocean/coastline/borders/
+  rivers/lakes) that v2's own plotters use, so the other five
+  network-disabled tasks can still render coastline maps offline.
+- Build the sandbox before baseline runs:
+  `docker build -t esflow-v2-benchmark-baseline -f benchmark/sandbox/Dockerfile .`
+- Run a small pilot before the paid full grid, for example:
+  `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`
+  and `python benchmark/run_benchmark.py --mode baseline --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`.
+  Then run `python benchmark/structural_grading.py`,
+  `python benchmark/make_manual_queue.py`, and `python benchmark/merge_grades.py`.
+- `benchmark/self_debug_crashes.py --max-rounds 3` retries only structurally
+  crashed artifacts using the original model and traceback feedback. It also makes
+  live model calls. Follow it with `benchmark/resolve_selfdebug.py` (writes
+  `scores_selfdebug_resolved_*.json`), `benchmark/grade_selfdebug.py` (reads
+  that file, writes `scores_selfdebug_graded_*.json`),
+  `benchmark/make_selfdebug_manual_queue.py`, and
+  `benchmark/merge_grades_selfdebug.py`; results under `benchmark/results/` are
+  intentionally ignored. Keep these three artifact prefixes distinct
+  (`scores_selfdebug_resolved`, `scores_selfdebug_graded`,
+  `scores_selfdebug_final`) — `latest_result()` matches a prefix only when
+  followed immediately by a timestamp, so a new script must not reuse
+  `scores_selfdebug` as its own output prefix or it will collide with these.
+- `benchmark/run_workflow_definition` (via `common/workflow_runner.py`) swallows
+  per-step tool exceptions and keeps going rather than raising, so a protocol
+  crash from a missing deliverable often has no traceback in the normal sense.
+  `run_benchmark.py`'s `_collect_step_errors()` walks the execution context for
+  any step whose result contains an `error` key and writes it to
+  `run{N}.error.txt`, which `self_debug_crashes.py` then uses as real repair
+  signal instead of falling back to `has_deliverable()`'s generic reason string.
+- Deterministic tests for this package live under `tests/benchmark/` (no Docker,
+  no live LLM calls) and run as part of the normal `pytest` suite. Do **not**
+  add an `__init__.py` to `tests/benchmark/` — pytest's default import mode
+  would then register it as the top-level module `benchmark`, shadowing the
+  real `benchmark/` package at the repo root (this bit us once; `tests/evals/`
+  has no `__init__.py` for the same reason).

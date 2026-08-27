@@ -1,0 +1,1 @@
+For six major river basins, compare E3SM MOSART simulated daily streamflow against GRDC observations for 1985-1989. Compute validation metrics (RMSE, NSE, KGE, PBIAS) and produce per-basin figures showing the basin boundary and sim-vs-obs time series with metrics annotated.

@@ -49,6 +49,7 @@ from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorCont
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
 from common.workflow import Settings
+from common.config import MODELS
 from common.logging_setup import configure_console_logging
 from common.workflow_runner import run_workflow_definition
 from evals.structural_grading_helpers import (
@@ -145,7 +146,7 @@ def run_task(label: str) -> Path:
     output_dir = RESULTS_DIR / f"{model}_protocol" / task / uuid4().hex[:8]
     settings = Settings(data_dir="./data/sample", output_dir=str(output_dir))
 
-    workflow = asyncio.run(plan_workflow_one_shot(user_goal, settings))
+    workflow = asyncio.run(plan_workflow_one_shot(user_goal, settings, MODELS[model]))
     context = run_workflow_definition(workflow.model_dump(), verbose=False)
 
     return Path(context["output_dir"])

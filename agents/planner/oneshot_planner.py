@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from .planner_tools import ONESHOT_PLANNER_TOOLS
-from common import WorkflowState
+from common import WorkflowState, _model_override
 from common.config import load_prompt, model
 from common.workflow import Settings, Workflow
 
@@ -38,7 +39,9 @@ oneshot_planner: Agent[WorkflowState, Workflow | str] = Agent(
 )
 
 
-async def plan_workflow_one_shot(user_goal: str, settings: Settings) -> Workflow:
+async def plan_workflow_one_shot(
+    user_goal: str, settings: Settings, model_override: Model | None = None
+) -> Workflow:
     """Plan an ESMFlow workflow from a user goal using the planner chain."""
     state = WorkflowState(
         workflow=Workflow(
@@ -46,10 +49,18 @@ async def plan_workflow_one_shot(user_goal: str, settings: Settings) -> Workflow
             description=user_goal,
             settings=settings,
             steps=[],
-        )
+        ),
     )
-
-    # Force a structured Workflow on the programmatic path (evals depend on this).
-    # The plain-text conversational path is only enabled for the to_web chat UI.
-    result = await oneshot_planner.run(user_goal, deps=state, output_type=Workflow)
+    token = _model_override.set(model_override)
+    try:
+        # Force a structured Workflow on the programmatic path (evals depend on this).
+        # The plain-text conversational path is only enabled for the to_web chat UI.
+        run_kwargs = {}
+        if model_override is not None:
+            run_kwargs["model"] = model_override
+        result = await oneshot_planner.run(
+            user_goal, deps=state, output_type=Workflow, **run_kwargs
+        )
+    finally:
+        _model_override.reset(token)
     return result.output
