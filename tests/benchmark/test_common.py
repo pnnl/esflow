@@ -10,6 +10,7 @@ import time
 import pytest
 
 from benchmark.common import (
+    ERROR_RE,
     NETWORK_REQUIRED_TASKS,
     clean_artifact,
     latest_result,
@@ -140,3 +141,37 @@ def test_timestamped_result_path_matches_latest_result_pattern(monkeypatch, tmp_
 # ---------------------------------------------------------------------------
 def test_network_required_tasks_are_exactly_the_ilamb_dependent_tasks():
     assert NETWORK_REQUIRED_TASKS == {"task_03_et_benchmark", "task_07_integrated_diagnostic"}
+
+
+# ---------------------------------------------------------------------------
+# ERROR_RE -- word-boundary anchored so a baseline run's benign stdout/stderr
+# text doesn't get misclassified as a crash by run_baseline_in_sandbox().
+# Mirrors v1's pattern; a prior port here dropped the \b anchors and matched
+# any of these words as a bare substring, which this regression-tests.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "benign_text",
+    [
+        "0 errors found",
+        "error_bar",
+        "column error_bar computed successfully",
+        "Errors: 0",
+        "failed_count = 0  # no actual failures",
+    ],
+)
+def test_error_re_does_not_match_benign_substrings(benign_text):
+    assert ERROR_RE.search(benign_text) is None
+
+
+@pytest.mark.parametrize(
+    "genuine_error_text",
+    [
+        "Traceback (most recent call last):",
+        "raised an Exception during processing",
+        "Fatal error: cannot continue",
+        "the script failed to converge",
+        "encountered an error while reading the file",
+    ],
+)
+def test_error_re_matches_genuine_error_signals(genuine_error_text):
+    assert ERROR_RE.search(genuine_error_text) is not None

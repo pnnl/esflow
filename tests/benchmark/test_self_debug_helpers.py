@@ -8,9 +8,11 @@ local-execution helper functions are tested.
 
 from pathlib import Path
 
+import pytest
+
 from benchmark.common import BASELINE_OUTPUT_INSTRUCTION
 from benchmark.run_benchmark import _collect_step_errors
-from benchmark.self_debug_crashes import build_repair_prompt, execute_protocol
+from benchmark.self_debug_crashes import build_repair_prompt, execute_protocol, validate_args
 
 
 # ---------------------------------------------------------------------------
@@ -122,3 +124,28 @@ def test_execute_protocol_overrides_output_dir_regardless_of_yaml_content(tmp_pa
     # /some/other/place/the/model/wrote, and doesn't crash trying to.
     assert ok is False
     assert isinstance(reason, str) and reason
+
+
+# ---------------------------------------------------------------------------
+# validate_args() -- rejects --max-rounds < 1 with a clear message instead of
+# letting main()'s loop leave `version`/`output` unbound (a NameError when
+# range(1, max_rounds + 1) is empty).
+# ---------------------------------------------------------------------------
+class _Args:
+    def __init__(self, max_rounds):
+        self.max_rounds = max_rounds
+
+
+def test_validate_args_rejects_zero_max_rounds():
+    with pytest.raises(SystemExit, match="--max-rounds must be positive"):
+        validate_args(_Args(max_rounds=0))
+
+
+def test_validate_args_rejects_negative_max_rounds():
+    with pytest.raises(SystemExit, match="--max-rounds must be positive"):
+        validate_args(_Args(max_rounds=-1))
+
+
+def test_validate_args_accepts_positive_max_rounds():
+    validate_args(_Args(max_rounds=1))
+    validate_args(_Args(max_rounds=3))

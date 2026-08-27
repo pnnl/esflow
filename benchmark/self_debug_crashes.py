@@ -82,6 +82,11 @@ def execute_protocol(workflow_text: str, out_dir: Path, task: str) -> tuple[bool
         return False, traceback.format_exc()
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.max_rounds < 1:
+        raise SystemExit("--max-rounds must be positive")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scores", type=Path, help="scores_structural_*.json (default: latest)")
@@ -89,6 +94,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--sandbox-image", default="esflow-v2-benchmark-baseline")
     args = parser.parse_args()
+    validate_args(args)
     scores = read_json(args.scores or latest_result("scores_structural"))
     results = []
     for score in scores:

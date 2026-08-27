@@ -107,13 +107,13 @@ def run_baseline_in_sandbox(
     return True, "execution passed", result.stdout, result.stderr
 
 
-async def generate_baseline(model_name: str, task: str, out_dir: Path) -> tuple[str, object]:
+async def generate_baseline(model_name: str, task: str) -> str:
     system = (BASELINES_DIR / "system_codegen.txt").read_text(encoding="utf-8")
     task_text = prompt_path("baseline", task).read_text(encoding="utf-8")
     user = f"{task_text}\n\n{BASELINE_OUTPUT_INSTRUCTION}"
     agent = Agent(MODELS[model_name], output_type=str, instructions=system)
     result = await agent.run(user)
-    return result.output, result
+    return result.output
 
 
 def _collect_step_errors(context: dict | None) -> str:
@@ -180,7 +180,7 @@ def run_baseline(model_name: str, task: str, run: int, args: argparse.Namespace)
     row = {"mode": "baseline", "model": model_name, "task": task, "run": run,
            "output_file": str(artifact), "output_dir": str(out_dir)}
     try:
-        raw_text, _ = asyncio.run(generate_baseline(model_name, task, out_dir))
+        raw_text = asyncio.run(generate_baseline(model_name, task))
         raw.write_text(raw_text, encoding="utf-8")
         code = clean_artifact(raw_text, "python")
         artifact.write_text(code + "\n", encoding="utf-8")

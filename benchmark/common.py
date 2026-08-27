@@ -50,7 +50,14 @@ NETWORK_REQUIRED_TASKS = {"task_03_et_benchmark", "task_07_integrated_diagnostic
 # writable mount point. Keep both call sites referencing this constant.
 BASELINE_OUTPUT_INSTRUCTION = "Save every output file to: /workspace/output"
 
-ERROR_RE = re.compile(r"traceback|error|exception|failed|fatal", re.IGNORECASE)
+# Word-boundary anchored so benign substrings (e.g. a column named
+# "error_bar", or output like "0 errors found") don't trigger a false
+# crash. Intentionally mirrors v1's benchmark/run_benchmark.py pattern
+# (r"\b(traceback|error|exception|failed|fatal)\b") -- a plain unanchored
+# version was ported here at one point and produced false positives on any
+# baseline script whose benign output happened to contain one of these
+# words as part of a longer token.
+ERROR_RE = re.compile(r"\b(traceback|error|exception|failed|fatal)\b", re.IGNORECASE)
 
 # Matches exactly "<prefix>_<8-digit-date>_<6-digit-time>.json", e.g.
 # "scores_structural_20260827_222314.json". Anchored so a lookup for one
