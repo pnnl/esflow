@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.common import BASELINE_OUTPUT_INSTRUCTION
+from benchmark.common import BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, PROTOCOL_DIR
 from benchmark.run_benchmark import _collect_step_errors
-from benchmark.self_debug_crashes import build_repair_prompt, execute_protocol, validate_args
+from benchmark.self_debug_crashes import (
+    build_repair_prompt, execute_protocol, repair_prompt_file, validate_args,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +151,23 @@ def test_validate_args_rejects_negative_max_rounds():
 def test_validate_args_accepts_positive_max_rounds():
     validate_args(_Args(max_rounds=1))
     validate_args(_Args(max_rounds=3))
+
+
+# ---------------------------------------------------------------------------
+# repair_prompt_file() -- must resolve to benchmark/baselines/ (plural) for
+# baseline mode, not benchmark/baseline/ (singular). A prior inline path
+# construction hardcoded the singular directory, which doesn't exist and
+# raises FileNotFoundError as soon as the repair loop tries to read it.
+# ---------------------------------------------------------------------------
+def test_repair_prompt_file_resolves_baseline_prompts_dir():
+    path = repair_prompt_file("baseline", "task_01_obs_summary")
+    assert path.parent == BASELINES_DIR
+    assert path.name == "task_01_obs_summary.txt"
+    assert path.exists()
+
+
+def test_repair_prompt_file_resolves_protocol_prompts_dir():
+    path = repair_prompt_file("protocol", "task_01_obs_summary")
+    assert path.parent == PROTOCOL_DIR
+    assert path.name == "task_01_obs_summary.txt"
+    assert path.exists()

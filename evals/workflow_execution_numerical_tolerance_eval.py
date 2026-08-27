@@ -64,7 +64,7 @@ GRADE_CRASH = 0.0
 GRADE_UNDETERMINED = 0.5
 GRADE_SUCCESS = 1.0
 
-MODELS = [
+EVAL_MODELS = [
     "GPT 5.4",
     "Gemini 3.5 Flash"
 ]
@@ -112,7 +112,7 @@ class StructuralGrade(Evaluator[str, Path]):
 def make_dataset() -> Dataset[str, Path, None]:
     """Build a pydantic-evals dataset of (model, task) cases."""
     cases: list[Case[str, Path, None]] = []
-    for model in MODELS:
+    for model in EVAL_MODELS:
         for task in TASKS:
             ref_dir = REF_DIR / task
             cases.append(Case(

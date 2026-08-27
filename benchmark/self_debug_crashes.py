@@ -15,8 +15,8 @@ import yaml
 from pydantic_ai import Agent
 
 from benchmark.common import (
-    BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, ROOT, clean_artifact,
-    latest_result, read_json, timestamped_result_path, write_json,
+    BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, clean_artifact,
+    latest_result, prompt_path, read_json, timestamped_result_path, write_json,
 )
 from benchmark.run_benchmark import _collect_step_errors, run_baseline_in_sandbox
 from common.config import MODELS
@@ -87,6 +87,17 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--max-rounds must be positive")
 
 
+def repair_prompt_file(mode: str, task: str) -> Path:
+    """Resolve the on-disk task prompt file for a crashed run's repair loop.
+
+    Delegates to benchmark.common.prompt_path() -- the same helper
+    run_benchmark.py uses for initial generation -- instead of constructing
+    the path inline, since the on-disk directory for baseline prompts is
+    benchmark/baselines/ (plural), not benchmark/baseline/.
+    """
+    return prompt_path(mode, task)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scores", type=Path, help="scores_structural_*.json (default: latest)")
@@ -105,7 +116,7 @@ def main() -> None:
         if not source.exists():
             results.append(score | {"status": "skip", "reason": "source artifact missing"})
             continue
-        prompt_file = ROOT / "benchmark" / mode / f"{task}.txt"
+        prompt_file = repair_prompt_file(mode, task)
         current = source.read_text(encoding="utf-8")
         error_file = (
             source.with_suffix(".error.txt") if mode == "protocol"
