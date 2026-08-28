@@ -30,6 +30,15 @@ PILOT_MODELS = [
     "Claude Haiku 4.5",
 ]
 
+# All six E3SM-dependent tasks (task_02..task_07) reference this exact case
+# name in their prompts and expect it available via ${settings.case_name} for
+# tools like extract_gridded_field/match_to_grid, which require it as a
+# separate param from data_dir. Settings.case_name is unset by
+# agents/planner/settings.py's server-side default_settings() (a real user's
+# case name can't be known in advance there), but the benchmark always
+# targets this one fixed sample dataset, so it belongs here.
+SAMPLE_CASE_NAME = "sample.v3.LR.historical"
+
 
 def slug(value: str) -> str:
     """Return a stable filesystem-safe label."""

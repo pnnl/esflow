@@ -33,7 +33,7 @@ from common.workflow import Settings, Workflow
 from common.workflow_runner import run_workflow_definition
 from common.workflow_validation import validate_workflow
 
-from benchmark.common import REFERENCE_DIR, output_dir, prompt_path, run_dir
+from benchmark.common import REFERENCE_DIR, SAMPLE_CASE_NAME, output_dir, prompt_path, run_dir
 from benchmark.grading import StructuralGrade
 
 PlannerFn = Callable[[str, Settings, object], Awaitable[Workflow]]
@@ -102,7 +102,9 @@ async def run_planned_case(
     artifact.parent.mkdir(parents=True, exist_ok=True)
     out_dir = output_dir(mode, model_name, task, run)
     prompt = prompt_path(mode, task).read_text(encoding="utf-8")
-    settings = Settings(data_dir="./data/sample", output_dir=str(out_dir))
+    settings = Settings(
+        case_name=SAMPLE_CASE_NAME, data_dir="./data/sample", output_dir=str(out_dir)
+    )
 
     try:
         workflow = await planner(prompt, settings, MODELS[model_name])

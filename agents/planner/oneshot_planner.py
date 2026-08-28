@@ -63,4 +63,13 @@ async def plan_workflow_one_shot(
         )
     finally:
         _model_override.reset(token)
-    return result.output
+    workflow = result.output
+    # The model's final structured-output turn constructs a fresh Workflow and is
+    # free to rewrite `settings` from whatever the task prompt said (e.g. a
+    # literal "save to ./output/foo" instruction), discarding the caller-provided
+    # `settings` that check_completeness/run_workflow_validation validated
+    # against during the tool-calling loop. Force the caller's settings back on
+    # before returning -- callers (benchmark harness, mcp_server.py) depend on
+    # the workflow actually writing to the output_dir they specified.
+    workflow.settings = settings
+    return workflow
