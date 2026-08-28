@@ -94,7 +94,7 @@ Write the workflow as yaml to the output folder
 
 From the repository root, run one of:
 
-- `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1` to plan, execute, and numerically grade protocol-mode workflows. This requires the local sample data.
-- `python benchmark/run_benchmark.py --mode baseline --models "GPT 5.4" --tasks task_01_obs_summary --runs 1` to generate and sandbox-execute the free-code baseline for comparison. Requires the Docker sandbox image; see `AGENTS.md`.
+- `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1` to plan and execute workflows using v2's supervisor/planner architecture. This requires the local sample data.
+- `python benchmark/run_benchmark.py --mode single_agent --models "GPT 5.4" --tasks task_01_obs_summary --runs 1` to plan and execute workflows using a single, undelegated LLM call given the full tool catalog -- the baseline arm, reproducing v1's original single-agent architecture against v2's own tool catalog and data.
 
-Both write a `pydantic_evals` `EvaluationReport` to `benchmark/results/{mode}_report.json`, graded inline by the shared `StructuralGrade` evaluator in `benchmark/grading.py`. See `AGENTS.md`'s "Benchmark" section for the full pipeline (manual review queue, self-debug retries).
+Both arms read the same task prompts, execute identically via `run_workflow_definition()`, and write a `pydantic_evals` `EvaluationReport` to `benchmark/results/{mode}_report.json`, graded inline by the shared `StructuralGrade` evaluator in `benchmark/grading.py`. See `AGENTS.md`'s "Benchmark" section for the full pipeline (manual review queue, self-debug retries).

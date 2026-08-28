@@ -131,31 +131,34 @@ web app.
 
 ## Benchmark
 
-- `benchmark/` replicates the paper's protocol-versus-free-code comparison using
-  the seven prompts under `benchmark/protocol/` and `benchmark/baselines/`.
-  Protocol runs use the one-shot planner; baseline runs generate arbitrary Python
-  and execute it in the Docker sandbox, with read-only sample data, CPU/memory/
-  process limits, and a per-run writable output mount.
-- Network is disabled (`--network=none`) for baseline containers **except**
-  `task_03_et_benchmark` and `task_07_integrated_diagnostic`
-  (`NETWORK_REQUIRED_TASKS` in `benchmark/common.py`): those two tasks call
-  `fetch_ilamb_data`, which downloads from `https://www.ilamb.org` with no
-  offline cache, so their containers get full outbound network access instead
-  of a narrower domain allow-list. Protocol-mode workflows always execute
-  unsandboxed on the host and already have network access, so this keeps the
-  two conditions comparable for those tasks. The sandbox image also pre-fetches
-  the 110m-resolution Natural Earth shapefiles (land/ocean/coastline/borders/
-  rivers/lakes) that v2's own plotters use, so the other five
-  network-disabled tasks can still render coastline maps offline.
-- Build the sandbox before baseline runs:
-  `docker build -t esflow-v2-benchmark-baseline -f benchmark/sandbox/Dockerfile .`
+- `benchmark/` replicates the paper's comparison of v2's supervisor/planner
+  architecture against a single-agent baseline, using the seven prompts
+  under `benchmark/protocol/`. Both arms read the exact same task prompt --
+  the task doesn't change, only which planning architecture receives it:
+  - `--mode protocol` uses the one-shot planner
+    (`agents/planner/oneshot_planner.py`), which delegates to category
+    subagents and self-checks via `check_completeness`/
+    `run_workflow_validation` before returning.
+  - `--mode single_agent` uses `agents/planner/single_agent_planner.py`, a
+    single undelegated LLM call given the full tool catalog inlined via
+    `common.config.load_prompt()`, with no subagents and no self-check
+    tools -- reproducing v1's original single-agent architecture
+    (`call_llm` in v1's `benchmark/run_benchmark.py`) against v2's own tool
+    catalog and data, instead of comparing against LLM-generated free-form
+    Python.
+  Both arms produce structured `Workflow` YAML and execute identically via
+  `run_workflow_definition()`, unsandboxed on the host with real network
+  access -- there is no Docker sandbox or free-code-generation path in this
+  benchmark.
 - Run a small pilot before the paid full grid, for example:
   `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`
-  and `python benchmark/run_benchmark.py --mode baseline --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`.
+  and `python benchmark/run_benchmark.py --mode single_agent --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`.
   Each writes a `pydantic_evals.EvaluationReport` to
   `benchmark/results/{mode}_report.json`; grading happens inline during the
   run via the shared `StructuralGrade` evaluator (`benchmark/grading.py`), not
-  as a separate pass over JSON files. Then run
+  as a separate pass over JSON files. `StructuralGrade`'s Step 2 (numerical
+  reference comparison) applies identically to both arms, since both produce
+  structured, predictable-filename output. Then run
   `python benchmark/make_manual_queue.py --report benchmark/results/protocol_report.json --mode protocol`
   to export cases graded `undetermined` (score 0.5) to
   `benchmark/results/manual_review_protocol.csv` for human review, and
@@ -168,24 +171,25 @@ web app.
   makes live model calls. Each retry round builds a small `Dataset`/`Case`
   pair and re-grades the repaired artifact with the *same* `StructuralGrade`
   evaluator used for the main run — there is no separate resolve/grade/queue/
-  merge script family duplicating that logic. Writes
+  merge script family duplicating that logic. Both arms share one repair code
+  path (`execute_workflow()`) since both produce YAML. Writes
   `benchmark/results/self_debug_{mode}.json` (plain JSON rows, since these are
   retry-attempt metadata rather than a `pydantic_evals` report); results under
   `benchmark/results/` are intentionally ignored.
 - `benchmark/run_workflow_definition` (via `common/workflow_runner.py`) swallows
-  per-step tool exceptions and keeps going rather than raising, so a protocol
-  crash from a missing deliverable often has no traceback in the normal sense.
+  per-step tool exceptions and keeps going rather than raising, so a crash
+  from a missing deliverable often has no traceback in the normal sense.
   `benchmark/datasets.py`'s `_collect_step_errors()` walks the execution context
   for any step whose result contains an `error` key and writes it to
   `run{N}.error.txt`, which `self_debug_crashes.py` then uses as real repair
   signal instead of falling back to `has_deliverable()`'s generic reason string.
-- Deterministic tests for this package live under `tests/benchmark/` (no Docker,
-  no live LLM calls) and run as part of the normal `pytest` suite. Do **not**
+- Deterministic tests for this package live under `tests/benchmark/` (no
+  live LLM calls) and run as part of the normal `pytest` suite. Do **not**
   add an `__init__.py` to `tests/benchmark/` — pytest's default import mode
   would then register it as the top-level module `benchmark`, shadowing the
   real `benchmark/` package at the repo root (this bit us once).
 - `benchmark/reference_workflows/results/` holds the numeric reference outputs
-  `StructuralGrade`'s Step 2 (protocol-mode numerical comparison) checks
-  against; `benchmark/reference_workflows/prompts/` holds the human-facing
+  `StructuralGrade`'s Step 2 (numerical comparison) checks against;
+  `benchmark/reference_workflows/prompts/` holds the human-facing
   reference YAML for each task. Both moved here from the now-deleted `evals/`
   package.

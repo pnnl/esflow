@@ -37,7 +37,7 @@ def resolve_final_grade(auto_grade: str, manual_grade: str | None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True, help="{mode}_report.json")
-    parser.add_argument("--mode", required=True, choices=("protocol", "baseline"))
+    parser.add_argument("--mode", required=True, choices=("protocol", "single_agent"))
     parser.add_argument("--manual", type=Path, default=None)
     args = parser.parse_args()
     manual_path = args.manual or RESULTS_DIR / f"manual_review_{args.mode}.csv"

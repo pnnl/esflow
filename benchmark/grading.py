@@ -7,9 +7,15 @@ Two grades can be assigned automatically; the rest need human review:
         task_01               -> a summary-statistics CSV
         task_02 .. task_07    -> at least one PNG figure
 
-  Step 2 - Success detection (protocol mode only)
+  Step 2 - Success detection
       SUCCESS iff the key data file is numerically identical to the
-      reference within float64 precision (rtol=1e-12, atol=1e-15).
+      reference within float64 precision (rtol=1e-12, atol=1e-15). Applies
+      identically to both benchmark arms -- "protocol" (the v2 supervisor/
+      planner architecture, agents/planner/oneshot_planner.py) and
+      "single_agent" (a single undelegated LLM call given the tool catalog,
+      agents/planner/single_agent_planner.py, matching v1's original
+      architecture) -- since both produce structured Workflow YAML with
+      predictable, catalog-defined output filenames.
 
   Step 3 - Manual review
       UNDETERMINED runs are flagged for human inspection (see
@@ -17,8 +23,8 @@ Two grades can be assigned automatically; the rest need human review:
 
 ``StructuralGrade`` is a ``pydantic_evals.Evaluator`` that combines Steps 1
 and 2 into a single numeric score, used as the evaluator on every
-``Case`` in ``benchmark/datasets.py`` (protocol, baseline, and self-debug
-retries alike).
+``Case`` in ``benchmark/datasets.py`` (protocol, single_agent, and
+self-debug retries alike).
 """
 
 from __future__ import annotations
@@ -64,10 +70,9 @@ DELIVERABLE = {
     "task_07_integrated_diagnostic": "png",
 }
 
-# Filename keywords used to locate the key data file in a protocol
-# run for Step 2's numerical comparison. Protocol runs use validated
-# tools so filenames are predictable; baseline runs are not auto-graded
-# in Step 2.
+# Filename keywords used to locate the key data file for Step 2's numerical
+# comparison. Both benchmark arms use the same validated tool catalog, so
+# output filenames are predictable for protocol and single_agent alike.
 KEY_CSV_PATTERNS = {
     "task_01_obs_summary":           ["summary", "stats"],
     "task_02_seasonal_runoff":       ["stats", "global"],
@@ -262,24 +267,24 @@ def protocol_matches_reference(out_dir: Path, task: str,
     return True, f"csv: {csv_reason}"
 
 
-def grade(out_dir: Path, mode: str, task: str, reference_dir: Path) -> tuple[str, str]:
+def grade(out_dir: Path, task: str, reference_dir: Path) -> tuple[str, str]:
     """Return (grade, reason) for a single run's output directory.
 
     grade is one of GRADE_CRASH / GRADE_SUCCESS / GRADE_UNDETERMINED.
-    Baseline mode is never auto-graded success in Step 2 -- filenames are
-    unpredictable free-form code output -- so it always falls to
-    undetermined once a deliverable exists.
+    Both "protocol" (agents/planner/oneshot_planner.py) and "single_agent"
+    (agents/planner/single_agent_planner.py) produce structured Workflow
+    YAML with predictable, catalog-defined output filenames, so Step 2
+    (numerical reference comparison) applies to both arms identically.
     """
     ok, reason = has_deliverable(out_dir, task)
     if not ok:
         return GRADE_CRASH, reason
-    if mode == "protocol":
-        ref_dir = reference_dir / task
-        match, reason = protocol_matches_reference(
-            out_dir, task, find_key_csv(ref_dir, task), find_key_nc(ref_dir, task)
-        )
-        if match:
-            return GRADE_SUCCESS, reason
+    ref_dir = reference_dir / task
+    match, reason = protocol_matches_reference(
+        out_dir, task, find_key_csv(ref_dir, task), find_key_nc(ref_dir, task)
+    )
+    if match:
+        return GRADE_SUCCESS, reason
     return GRADE_UNDETERMINED, reason
 
 
@@ -291,11 +296,15 @@ class StructuralGrade(Evaluator[str, Path]):
       crash        -> 0.0
       success      -> 1.0
       undetermined -> 0.5  (needs manual review)
+
+    `mode` is descriptive only (used by callers for path/report labeling);
+    grading behavior no longer varies by mode -- protocol and single_agent
+    are graded identically since both produce structured Workflow YAML.
     """
     mode: str
     task: str
     reference_dir: Path
 
     def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
-        auto_grade, reason = grade(ctx.output, self.mode, self.task, self.reference_dir)
+        auto_grade, reason = grade(ctx.output, self.task, self.reference_dir)
         return EvaluationReason(value=SCORE_BY_GRADE[auto_grade], reason=f"{auto_grade}: {reason}")

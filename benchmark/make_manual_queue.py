@@ -24,7 +24,7 @@ from benchmark.datasets import parse_case_name
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True, help="{mode}_report.json")
-    parser.add_argument("--mode", required=True, choices=("protocol", "baseline"))
+    parser.add_argument("--mode", required=True, choices=("protocol", "single_agent"))
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     output = args.output or RESULTS_DIR / f"manual_review_{args.mode}.csv"

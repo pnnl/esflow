@@ -163,11 +163,11 @@ def test_protocol_matches_reference_requires_csv_and_optional_netcdf(tmp_path):
 def test_grade_is_crash_when_deliverable_missing(tmp_path):
     out_dir = tmp_path / "run1_output"
     out_dir.mkdir()
-    auto_grade, _reason = grade(out_dir, "protocol", "task_01_obs_summary", tmp_path / "reference")
+    auto_grade, _reason = grade(out_dir, "task_01_obs_summary", tmp_path / "reference")
     assert auto_grade == GRADE_CRASH
 
 
-def test_grade_is_success_when_protocol_matches_reference(tmp_path):
+def test_grade_is_success_when_output_matches_reference(tmp_path):
     ref_dir = tmp_path / "reference" / "task_01_obs_summary"
     ref_dir.mkdir(parents=True)
     _write_csv(ref_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
@@ -176,11 +176,11 @@ def test_grade_is_success_when_protocol_matches_reference(tmp_path):
     out_dir.mkdir(parents=True)
     _write_csv(out_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
 
-    auto_grade, _reason = grade(out_dir, "protocol", "task_01_obs_summary", tmp_path / "reference")
+    auto_grade, _reason = grade(out_dir, "task_01_obs_summary", tmp_path / "reference")
     assert auto_grade == GRADE_SUCCESS
 
 
-def test_grade_is_undetermined_when_protocol_values_mismatch(tmp_path):
+def test_grade_is_undetermined_when_values_mismatch(tmp_path):
     ref_dir = tmp_path / "reference" / "task_01_obs_summary"
     ref_dir.mkdir(parents=True)
     _write_csv(ref_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
@@ -189,38 +189,25 @@ def test_grade_is_undetermined_when_protocol_values_mismatch(tmp_path):
     out_dir.mkdir(parents=True)
     _write_csv(out_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "999.0"}])
 
-    auto_grade, _reason = grade(out_dir, "protocol", "task_01_obs_summary", tmp_path / "reference")
+    auto_grade, _reason = grade(out_dir, "task_01_obs_summary", tmp_path / "reference")
     assert auto_grade == GRADE_UNDETERMINED
 
 
-def test_grade_never_auto_grades_baseline_as_success(tmp_path):
-    """Baseline filenames are unpredictable free-form code output; Step 2
-    (numeric reference comparison) only applies to protocol mode, even when
-    a CSV with the exact reference values happens to be present."""
-    ref_dir = tmp_path / "reference" / "task_01_obs_summary"
-    ref_dir.mkdir(parents=True)
-    _write_csv(ref_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
-
-    out_dir = tmp_path / "run" / "task_01_obs_summary" / "run1_output"
-    out_dir.mkdir(parents=True)
-    _write_csv(out_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
-
-    auto_grade, _reason = grade(out_dir, "baseline", "task_01_obs_summary", tmp_path / "reference")
-    assert auto_grade == GRADE_UNDETERMINED
-
-
-def test_grade_baseline_crash_still_detected(tmp_path):
+def test_grade_crash_detected_regardless_of_task(tmp_path):
     out_dir = tmp_path / "run1_output"
     out_dir.mkdir()
-    auto_grade, _reason = grade(out_dir, "baseline", "task_02_seasonal_runoff", tmp_path / "reference")
+    auto_grade, _reason = grade(out_dir, "task_02_seasonal_runoff", tmp_path / "reference")
     assert auto_grade == GRADE_CRASH
 
 
 # ---------------------------------------------------------------------------
 # StructuralGrade -- the pydantic_evals.Evaluator wrapper used as the
-# evaluator on every Case in benchmark/datasets.py
+# evaluator on every Case in benchmark/datasets.py. Both "protocol" and
+# "single_agent" grade identically -- both produce structured Workflow YAML
+# with predictable, catalog-defined output filenames.
 # ---------------------------------------------------------------------------
-def test_structural_grade_scores_crash_success_and_undetermined(tmp_path):
+@pytest.mark.parametrize("mode", ["protocol", "single_agent"])
+def test_structural_grade_scores_crash_success_and_undetermined(tmp_path, mode):
     ref_dir = tmp_path / "reference" / "task_01_obs_summary"
     ref_dir.mkdir(parents=True)
     _write_csv(ref_dir / "summary_stats.csv", [{"gauge_id": "1", "mean": "1.5"}])
@@ -236,10 +223,10 @@ def test_structural_grade_scores_crash_success_and_undetermined(tmp_path):
         name="t",
         cases=[
             Case(name="crash", inputs="crash", evaluators=[
-                StructuralGrade(mode="protocol", task="task_01_obs_summary", reference_dir=tmp_path / "reference")
+                StructuralGrade(mode=mode, task="task_01_obs_summary", reference_dir=tmp_path / "reference")
             ]),
             Case(name="success", inputs="success", evaluators=[
-                StructuralGrade(mode="protocol", task="task_01_obs_summary", reference_dir=tmp_path / "reference")
+                StructuralGrade(mode=mode, task="task_01_obs_summary", reference_dir=tmp_path / "reference")
             ]),
         ],
     )

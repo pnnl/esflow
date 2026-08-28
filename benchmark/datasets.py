@@ -5,95 +5,43 @@ one Case per run directly, rather than using pydantic_evals' repeat= kwarg,
 so each run keeps its own artifact/output directory and case name. Grading
 happens inline via the shared ``StructuralGrade`` evaluator
 (``benchmark/grading.py``) instead of a second pass over JSON files.
+
+Two arms:
+  "protocol"     -- v2's supervisor/planner architecture
+                    (agents/planner/oneshot_planner.py)
+  "single_agent" -- a single, undelegated LLM call given the tool catalog,
+                    matching v1's original single-agent architecture
+                    (agents/planner/single_agent_planner.py)
+
+Both produce structured Workflow YAML and execute identically via
+run_workflow_definition() -- the only difference between run_protocol_case()
+and run_single_agent_case() is which planner produced the artifact.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import traceback
 from pathlib import Path
+from typing import Awaitable, Callable
 
-from pydantic_ai import Agent
 from pydantic_evals import Case, Dataset
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
+from agents.planner.single_agent_planner import plan_workflow_single_agent
 from common.config import MODELS
-from common.workflow import Settings
+from common.workflow import Settings, Workflow
 from common.workflow_runner import run_workflow_definition
 from common.workflow_validation import validate_workflow
 
-from benchmark.common import (
-    BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, ERROR_RE, NETWORK_REQUIRED_TASKS,
-    REFERENCE_DIR, ROOT, SANDBOX_IMAGE, clean_artifact, output_dir, prompt_path, run_dir,
-)
+from benchmark.common import REFERENCE_DIR, output_dir, prompt_path, run_dir
 from benchmark.grading import StructuralGrade
 
+PlannerFn = Callable[[str, Settings, object], Awaitable[Workflow]]
 
-def score_python_s0(code: str) -> tuple[bool, str]:
-    try:
-        compile(code, "<generated>", "exec")
-    except SyntaxError as exc:
-        return False, f"syntax error: {exc}"
-    return True, "Python compiles"
-
-
-def score_python_s1(code: str) -> tuple[bool, str]:
-    imports = "\n".join(
-        line for line in code.splitlines()
-        if line.lstrip().startswith(("import ", "from "))
-    )
-    if not imports:
-        return True, "no imports"
-    result = subprocess.run(
-        [sys.executable, "-c", imports], text=True, capture_output=True, timeout=30
-    )
-    if result.returncode:
-        return False, (result.stderr or result.stdout).strip()[-2000:]
-    return True, "imports resolve"
-
-
-def run_baseline_in_sandbox(
-    script: Path, out_dir: Path, timeout: int, image: str, task: str
-) -> tuple[bool, str, str, str]:
-    """Run arbitrary generated code with no writable host input data.
-
-    Network is disabled by default. task_03_et_benchmark and
-    task_07_integrated_diagnostic are a deliberate exception -- they call
-    fetch_ilamb_data, which needs to reach https://www.ilamb.org, and their
-    plots may trigger a first-time cartopy Natural Earth shapefile download.
-    See NETWORK_REQUIRED_TASKS and AGENTS.md for details.
-    """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = ROOT / "data" / "sample"
-    command = ["docker", "run", "--rm", "--read-only"]
-    if task not in NETWORK_REQUIRED_TASKS:
-        command.append("--network=none")
-    command += [
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-        "--memory=2g", "--cpus=2", "--pids-limit=256",
-        "-v", f"{data_dir.resolve()}:/workspace/data/sample:ro",
-        "-v", f"{script.resolve()}:/workspace/script.py:ro",
-        "-v", f"{out_dir.resolve()}:/workspace/output:rw",
-        "-w", "/workspace", image, "python", "/workspace/script.py",
-    ]
-    try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        return False, f"timeout after {timeout}s", exc.stdout or "", exc.stderr or ""
-    combined = f"{result.stdout}\n{result.stderr}"
-    if result.returncode or ERROR_RE.search(combined):
-        return False, f"exit={result.returncode}; {combined.strip()[-2000:]}", result.stdout, result.stderr
-    return True, "execution passed", result.stdout, result.stderr
-
-
-async def generate_baseline(model_name: str, task: str) -> str:
-    system = (BASELINES_DIR / "system_codegen.txt").read_text(encoding="utf-8")
-    task_text = prompt_path("baseline", task).read_text(encoding="utf-8")
-    user = f"{task_text}\n\n{BASELINE_OUTPUT_INSTRUCTION}"
-    agent = Agent(MODELS[model_name], output_type=str, instructions=system)
-    result = await agent.run(user)
-    return result.output
+PLANNERS: dict[str, PlannerFn] = {
+    "protocol": plan_workflow_one_shot,
+    "single_agent": plan_workflow_single_agent,
+}
 
 
 def _collect_step_errors(context: dict | None) -> str:
@@ -128,17 +76,19 @@ def parse_case_name(name: str) -> tuple[str, str, int]:
     return model, task, int(run.removeprefix("run"))
 
 
-async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path:
-    """Plan, validate, and execute a protocol run. Returns the output dir.
+async def run_planned_case(
+    mode: str, label: str, *, skip_execution: bool = False
+) -> Path:
+    """Plan (via the mode's planner), validate, and execute a run.
 
-    Catalog validation failures and runner rejections are *expected* LLM
-    output-quality failure modes -- not exceptional -- so this returns
-    out_dir normally for them (with the reason written to .error.txt) and
-    lets StructuralGrade's has_deliverable() check grade the run crash,
-    since no deliverable was ever produced. This keeps every run in
-    report.cases, where make_manual_queue.py/merge_grades.py/
-    self_debug_crashes.py look, instead of report.failures, which they
-    don't.
+    Returns the output dir. Catalog validation failures and runner
+    rejections are *expected* LLM output-quality failure modes -- not
+    exceptional -- so this returns out_dir normally for them (with the
+    reason written to .error.txt) and lets StructuralGrade's
+    has_deliverable() check grade the run crash, since no deliverable was
+    ever produced. This keeps every run in report.cases, where
+    make_manual_queue.py/merge_grades.py/self_debug_crashes.py look,
+    instead of report.failures, which they don't.
 
     Only genuinely unexpected exceptions (e.g. an Agent.run() call failing
     due to a network/API error, or a bug in the harness itself) still
@@ -146,15 +96,16 @@ async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path
     infra/tooling failures, not model-quality signal, and shouldn't be
     counted as a model "crash" in the benchmark stats.
     """
+    planner = PLANNERS[mode]
     model_name, task, run = parse_case_name(label)
-    artifact = run_dir("protocol", model_name, task) / f"run{run}.yaml"
+    artifact = run_dir(mode, model_name, task) / f"run{run}.yaml"
     artifact.parent.mkdir(parents=True, exist_ok=True)
-    out_dir = output_dir("protocol", model_name, task, run)
-    prompt = prompt_path("protocol", task).read_text(encoding="utf-8")
+    out_dir = output_dir(mode, model_name, task, run)
+    prompt = prompt_path(mode, task).read_text(encoding="utf-8")
     settings = Settings(data_dir="./data/sample", output_dir=str(out_dir))
 
     try:
-        workflow = await plan_workflow_one_shot(prompt, settings, MODELS[model_name])
+        workflow = await planner(prompt, settings, MODELS[model_name])
         workflow.write_to_file(artifact)
         errors = validate_workflow(workflow.to_yaml_dict())
         if errors:
@@ -177,58 +128,14 @@ async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path
         raise
 
 
-async def run_baseline_case(
-    label: str, *, timeout: int = 300,
-    sandbox_image: str = SANDBOX_IMAGE, skip_execution: bool = False,
-) -> Path:
-    """Generate, syntax/import-check, and sandbox-execute a baseline run.
+async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path:
+    """Plan, validate, and execute a protocol (supervisor/planner) run."""
+    return await run_planned_case("protocol", label, skip_execution=skip_execution)
 
-    Returns the output dir. Syntax and import-resolution failures are
-    *expected* LLM output-quality failure modes -- not exceptional -- so
-    this returns out_dir normally for them (with the reason written to
-    run{N}_execution.txt, the same file self_debug_crashes.py already
-    reads for baseline-mode error lookup) and lets StructuralGrade's
-    has_deliverable() check grade the run crash, since no deliverable was
-    ever produced. This keeps every run in report.cases, where
-    make_manual_queue.py/merge_grades.py/self_debug_crashes.py look,
-    instead of report.failures, which they don't.
 
-    Only genuinely unexpected exceptions still propagate, landing in
-    pydantic_evals' report.failures -- those are infra/tooling failures,
-    not model-quality signal.
-    """
-    model_name, task, run = parse_case_name(label)
-    artifact = run_dir("baseline", model_name, task) / f"run{run}.py"
-    raw = artifact.with_name(f"run{run}_raw.txt")
-    logs = artifact.with_name(f"run{run}_execution.txt")
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    out_dir = output_dir("baseline", model_name, task, run)
-
-    try:
-        raw_text = await generate_baseline(model_name, task)
-        raw.write_text(raw_text, encoding="utf-8")
-        code = clean_artifact(raw_text, "python")
-        artifact.write_text(code + "\n", encoding="utf-8")
-
-        ok, msg = score_python_s0(code)
-        if not ok:
-            logs.write_text(f"syntax check failed: {msg}", encoding="utf-8")
-            return out_dir
-        ok, msg = score_python_s1(code)
-        if not ok:
-            logs.write_text(f"import check failed: {msg}", encoding="utf-8")
-            return out_dir
-
-        if skip_execution:
-            return out_dir
-        ok, msg, stdout, stderr = run_baseline_in_sandbox(
-            artifact, out_dir, timeout, sandbox_image, task
-        )
-        logs.write_text(f"RESULT: {msg}\nSTDOUT\n{stdout}\nSTDERR\n{stderr}", encoding="utf-8")
-        return out_dir
-    except Exception:
-        raw.write_text(traceback.format_exc(), encoding="utf-8")
-        raise
+async def run_single_agent_case(label: str, *, skip_execution: bool = False) -> Path:
+    """Plan, validate, and execute a single-agent (v1-style) run."""
+    return await run_planned_case("single_agent", label, skip_execution=skip_execution)
 
 
 def make_dataset(mode: str, models: list[str], tasks: list[str], runs: int) -> Dataset[str, Path]:

@@ -6,20 +6,18 @@ exercised here; only the pure prompt-building, error-collection, and
 local-execution helper functions are tested.
 """
 
-from pathlib import Path
-
 import pytest
 
-from benchmark.common import BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, PROTOCOL_DIR
+from benchmark.common import PROTOCOL_DIR
 from benchmark.datasets import _collect_step_errors
 from benchmark.self_debug_crashes import (
-    build_repair_prompt, execute_protocol, repair_prompt_file, validate_args,
+    build_repair_prompt, execute_workflow, repair_prompt_file, validate_args,
 )
 
 
 # ---------------------------------------------------------------------------
-# _collect_step_errors() -- Fix 3: real per-step error text for protocol
-# self-debug, since run_workflow_definition() swallows exceptions internally
+# _collect_step_errors() -- real per-step error text for self-debug, since
+# run_workflow_definition() swallows exceptions internally
 # ---------------------------------------------------------------------------
 def test_collect_step_errors_returns_empty_string_for_none_context():
     assert _collect_step_errors(None) == ""
@@ -57,38 +55,36 @@ def test_collect_step_errors_handles_missing_result_key():
 
 
 # ---------------------------------------------------------------------------
-# build_repair_prompt() -- Fix 4: baseline repair prompts must carry the same
-# output-directory instruction the original generation prompt did
+# build_repair_prompt() -- includes the original task, the failing artifact,
+# and the error text for both benchmark arms
 # ---------------------------------------------------------------------------
-def test_build_repair_prompt_includes_output_instruction_for_baseline():
-    prompt = build_repair_prompt("baseline", "Do the analysis.", "print(1)", "Traceback...")
-    assert BASELINE_OUTPUT_INSTRUCTION in prompt
-
-
-def test_build_repair_prompt_omits_output_instruction_for_protocol():
-    prompt = build_repair_prompt("protocol", "Do the analysis.", "name: x", "error text")
-    assert BASELINE_OUTPUT_INSTRUCTION not in prompt
-
-
 def test_build_repair_prompt_includes_task_artifact_and_error():
-    prompt = build_repair_prompt("baseline", "TASK TEXT", "ARTIFACT TEXT", "ERROR TEXT")
+    prompt = build_repair_prompt("protocol", "TASK TEXT", "ARTIFACT TEXT", "ERROR TEXT")
     assert "TASK TEXT" in prompt
     assert "ARTIFACT TEXT" in prompt
     assert "ERROR TEXT" in prompt
 
 
+@pytest.mark.parametrize("mode", ["protocol", "single_agent"])
+def test_build_repair_prompt_works_for_both_modes(mode):
+    prompt = build_repair_prompt(mode, "Do the analysis.", "name: x", "error text")
+    assert "Do the analysis." in prompt
+    assert "name: x" in prompt
+    assert "error text" in prompt
+
+
 # ---------------------------------------------------------------------------
-# execute_protocol() -- always forces settings.output_dir onto the repaired
+# execute_workflow() -- always forces settings.output_dir onto the repaired
 # workflow regardless of what the model wrote, and surfaces real per-step
 # error text (via _collect_step_errors) when the deliverable is missing.
 # ---------------------------------------------------------------------------
-def test_execute_protocol_rejects_non_mapping_yaml(tmp_path):
-    ok, reason = execute_protocol("- just\n- a\n- list\n", tmp_path / "out", "task_01_obs_summary")
+def test_execute_workflow_rejects_non_mapping_yaml(tmp_path):
+    ok, reason = execute_workflow("- just\n- a\n- list\n", tmp_path / "out", "task_01_obs_summary")
     assert ok is False
     assert "not a mapping" in reason
 
 
-def test_execute_protocol_rejects_yaml_with_unknown_tool(tmp_path):
+def test_execute_workflow_rejects_yaml_with_unknown_tool(tmp_path):
     workflow_text = (
         "name: repaired\n"
         "description: test\n"
@@ -100,17 +96,16 @@ def test_execute_protocol_rejects_yaml_with_unknown_tool(tmp_path):
         "    tool: this_tool_does_not_exist\n"
         "    params: {}\n"
     )
-    ok, reason = execute_protocol(workflow_text, tmp_path / "out", "task_01_obs_summary")
+    ok, reason = execute_workflow(workflow_text, tmp_path / "out", "task_01_obs_summary")
     assert ok is False
     assert reason  # validate_workflow's error list, non-empty and joined
 
 
-def test_execute_protocol_overrides_output_dir_regardless_of_yaml_content(tmp_path):
+def test_execute_workflow_overrides_output_dir_regardless_of_yaml_content(tmp_path):
     """Even though the YAML says output_dir: /some/other/place, the actual
     out_dir argument must be what's checked for the deliverable -- this is
-    what makes protocol-mode repair safe against a model that ignores the
-    output-path instruction (unlike baseline mode, which is why Fix 4 was
-    needed for the baseline branch instead)."""
+    what makes repair safe against a model that ignores the output-path
+    instruction in the failing artifact it was shown."""
     workflow_text = (
         "name: repaired\n"
         "description: test\n"
@@ -120,7 +115,7 @@ def test_execute_protocol_overrides_output_dir_regardless_of_yaml_content(tmp_pa
         "steps: []\n"
     )
     out_dir = tmp_path / "actual_out_dir"
-    ok, reason = execute_protocol(workflow_text, out_dir, "task_01_obs_summary")
+    ok, reason = execute_workflow(workflow_text, out_dir, "task_01_obs_summary")
     # Empty steps -> "Workflow has no steps" validation error, never reaches
     # run_workflow_definition -- but the point is it never touches
     # /some/other/place/the/model/wrote, and doesn't crash trying to.
@@ -154,20 +149,13 @@ def test_validate_args_accepts_positive_max_rounds():
 
 
 # ---------------------------------------------------------------------------
-# repair_prompt_file() -- must resolve to benchmark/baselines/ (plural) for
-# baseline mode, not benchmark/baseline/ (singular). A prior inline path
-# construction hardcoded the singular directory, which doesn't exist and
-# raises FileNotFoundError as soon as the repair loop tries to read it.
+# repair_prompt_file() -- both benchmark arms read the exact same task
+# prompt from benchmark/protocol/, since the task text doesn't change
+# between arms, only which planner receives it.
 # ---------------------------------------------------------------------------
-def test_repair_prompt_file_resolves_baseline_prompts_dir():
-    path = repair_prompt_file("baseline", "task_01_obs_summary")
-    assert path.parent == BASELINES_DIR
-    assert path.name == "task_01_obs_summary.txt"
-    assert path.exists()
-
-
-def test_repair_prompt_file_resolves_protocol_prompts_dir():
-    path = repair_prompt_file("protocol", "task_01_obs_summary")
+@pytest.mark.parametrize("mode", ["protocol", "single_agent"])
+def test_repair_prompt_file_resolves_protocol_prompts_dir(mode):
+    path = repair_prompt_file(mode, "task_01_obs_summary")
     assert path.parent == PROTOCOL_DIR
     assert path.name == "task_01_obs_summary.txt"
     assert path.exists()
