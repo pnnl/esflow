@@ -164,7 +164,9 @@ def main() -> None:
                 ok, error, stdout, stderr = run_baseline_in_sandbox(
                     repaired, output, args.timeout, args.sandbox_image, task
                 )
-                (debug_dir / "execution.txt").write_text(f"STDOUT\n{stdout}\nSTDERR\n{stderr}", encoding="utf-8")
+                (debug_dir / "execution.txt").write_text(
+                    f"RESULT: {error}\nSTDOUT\n{stdout}\nSTDERR\n{stderr}", encoding="utf-8"
+                )
             (debug_dir / "result.txt").write_text(error, encoding="utf-8")
             if ok:
                 status = "fixed"

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
 import traceback
 from pathlib import Path
 
@@ -225,7 +224,7 @@ async def run_baseline_case(
         ok, msg, stdout, stderr = run_baseline_in_sandbox(
             artifact, out_dir, timeout, sandbox_image, task
         )
-        logs.write_text(f"STDOUT\n{stdout}\nSTDERR\n{stderr}", encoding="utf-8")
+        logs.write_text(f"RESULT: {msg}\nSTDOUT\n{stdout}\nSTDERR\n{stderr}", encoding="utf-8")
         return out_dir
     except Exception:
         raw.write_text(traceback.format_exc(), encoding="utf-8")

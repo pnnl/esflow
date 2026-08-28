@@ -152,3 +152,31 @@ async def test_run_baseline_case_still_raises_on_unexpected_exception(monkeypatc
     label = f"{MODEL_NAME}/{TASK}/run3"
     with pytest.raises(ConnectionError, match="simulated network failure"):
         await datasets.run_baseline_case(label)
+
+
+# ---------------------------------------------------------------------------
+# run_baseline_case() -- sandbox timeout/exit-code reason must survive into
+# run{N}_execution.txt even when stdout/stderr are empty, since
+# self_debug_crashes.py reads exactly this file as the repair-model error
+# signal (a prior version of run_baseline_case() dropped this "msg" value
+# entirely, silently discarding e.g. "timeout after 300s").
+# ---------------------------------------------------------------------------
+async def test_run_baseline_case_preserves_sandbox_timeout_reason_with_empty_output(monkeypatch):
+    async def fake_generate(model_name, task):
+        return "print('hello')\n"
+
+    def fake_sandbox(script, out_dir, timeout, image, task):
+        return False, "timeout after 300s", "", ""
+
+    monkeypatch.setattr(datasets, "generate_baseline", fake_generate)
+    monkeypatch.setattr(datasets, "run_baseline_in_sandbox", fake_sandbox)
+
+    label = f"{MODEL_NAME}/{TASK}/run4"
+    out_dir = await datasets.run_baseline_case(label)
+
+    from benchmark.common import run_dir
+    artifact = run_dir("baseline", MODEL_NAME, TASK) / "run4.py"
+    logs = artifact.with_name("run4_execution.txt")
+    log_text = logs.read_text(encoding="utf-8")
+    assert "timeout after 300s" in log_text
+    assert out_dir == datasets.output_dir("baseline", MODEL_NAME, TASK, 4)
