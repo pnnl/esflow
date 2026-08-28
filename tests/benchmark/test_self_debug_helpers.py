@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.common import BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, PROTOCOL_DIR
-from benchmark.run_benchmark import _collect_step_errors
+from benchmark.datasets import _collect_step_errors
 from benchmark.self_debug_crashes import (
     build_repair_prompt, execute_protocol, repair_prompt_file, validate_args,
 )

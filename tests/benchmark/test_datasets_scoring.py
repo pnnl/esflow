@@ -1,5 +1,5 @@
 """Deterministic tests for the pure Python scoring helpers in
-benchmark/run_benchmark.py.
+benchmark/datasets.py.
 
 No Docker or live LLM calls anywhere in this module. score_python_s1() does
 spawn a subprocess to check that imports resolve, but that subprocess is
@@ -7,7 +7,7 @@ just `python -c <imports>` against the current interpreter/environment --
 no network access and no Docker required.
 """
 
-from benchmark.run_benchmark import score_python_s0, score_python_s1
+from benchmark.datasets import score_python_s0, score_python_s1
 
 
 def test_score_python_s0_passes_for_valid_syntax():

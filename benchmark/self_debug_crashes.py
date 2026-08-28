@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Retry crashed benchmark artifacts with traceback-driven repairs."""
+"""Retry crashed benchmark artifacts with traceback-driven repairs.
+
+Reuses the same StructuralGrade evaluator each round (via a small per-round
+Dataset) instead of re-implementing has_deliverable/protocol_matches_reference
+inline -- one grading implementation for the main run and every self-debug
+round alike.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -13,17 +20,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml
 from pydantic_ai import Agent
+from pydantic_evals import Case, Dataset
+from pydantic_evals.reporting import EvaluationReportAdapter
 
 from benchmark.common import (
-    BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, clean_artifact,
-    latest_result, prompt_path, read_json, timestamped_result_path, write_json,
+    BASELINE_OUTPUT_INSTRUCTION, BASELINES_DIR, REFERENCE_DIR, RESULTS_DIR,
+    clean_artifact, prompt_path,
 )
-from benchmark.run_benchmark import _collect_step_errors, run_baseline_in_sandbox
+from benchmark.datasets import _collect_step_errors, parse_case_name, run_baseline_in_sandbox
+from benchmark.grading import StructuralGrade, has_deliverable
 from common.config import MODELS
 from common.config import load_prompt
 from common.workflow_runner import run_workflow_definition
 from common.workflow_validation import validate_workflow
-from evals.structural_grading_helpers import has_deliverable
 
 
 def feedback(mode: str, error: str) -> str:
@@ -98,40 +107,58 @@ def repair_prompt_file(mode: str, task: str) -> Path:
     return prompt_path(mode, task)
 
 
+def _crashed_cases(report, mode: str) -> list[tuple[str, str, int, Path]]:
+    """Return (model, task, run, output_dir) for every crashed case in report."""
+    crashed = []
+    for case in report.cases:
+        score = case.scores.get("StructuralGrade")
+        if score is None or not (score.reason or "").startswith("crash:"):
+            continue
+        model, task, run = parse_case_name(case.name)
+        crashed.append((model, task, run, Path(case.output)))
+    return crashed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scores", type=Path, help="scores_structural_*.json (default: latest)")
+    parser.add_argument("--report", type=Path, required=True, help="{mode}_report.json")
+    parser.add_argument("--mode", required=True, choices=("protocol", "baseline"))
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--sandbox-image", default="esflow-v2-benchmark-baseline")
     args = parser.parse_args()
     validate_args(args)
-    scores = read_json(args.scores or latest_result("scores_structural"))
+
+    report = EvaluationReportAdapter.validate_json(args.report.read_bytes())
     results = []
-    for score in scores:
-        if score["auto_grade"] != "crash":
-            continue
-        mode, model, task, run = (score[key] for key in ("mode", "model", "task", "run"))
-        source = Path(score["output_dir"]).parent / (f"run{run}.yaml" if mode == "protocol" else f"run{run}.py")
+    for model, task, run, out_dir in _crashed_cases(report, args.mode):
+        source_dir = out_dir.parent
+        source = source_dir / (f"run{run}.yaml" if args.mode == "protocol" else f"run{run}.py")
         if not source.exists():
-            results.append(score | {"status": "skip", "reason": "source artifact missing"})
+            results.append({
+                "mode": args.mode, "model": model, "task": task, "run": run,
+                "status": "skip", "reason": "source artifact missing",
+            })
             continue
-        prompt_file = repair_prompt_file(mode, task)
+        prompt_file = repair_prompt_file(args.mode, task)
         current = source.read_text(encoding="utf-8")
         error_file = (
-            source.with_suffix(".error.txt") if mode == "protocol"
+            source.with_suffix(".error.txt") if args.mode == "protocol"
             else source.with_name(f"run{run}_execution.txt")
         )
-        error = error_file.read_text(encoding="utf-8") if error_file.exists() else score["reason"]
+        error = error_file.read_text(encoding="utf-8") if error_file.exists() else "unknown error"
         status = "exhausted"
+        output = out_dir
         for version in range(1, args.max_rounds + 1):
-            debug_dir = source.parent / f"run{run}_debug" / f"v{version}"
+            debug_dir = source_dir / f"run{run}_debug" / f"v{version}"
             debug_dir.mkdir(parents=True, exist_ok=True)
-            current = asyncio.run(repair(model, mode, prompt_file.read_text(encoding="utf-8"), current, error))
+            current = asyncio.run(
+                repair(model, args.mode, prompt_file.read_text(encoding="utf-8"), current, error)
+            )
             repaired = debug_dir / source.name
             repaired.write_text(current + "\n", encoding="utf-8")
             output = debug_dir / "output"
-            if mode == "protocol":
+            if args.mode == "protocol":
                 ok, error = execute_protocol(current, output, task)
             else:
                 ok, error, stdout, stderr = run_baseline_in_sandbox(
@@ -142,9 +169,30 @@ def main() -> None:
             if ok:
                 status = "fixed"
                 break
-        results.append(score | {"status": status, "rounds_used": version, "final_output_dir": str(output)})
-    path = timestamped_result_path("self_debug")
-    write_json(path, results)
+
+        # Re-grade the final attempt with the same StructuralGrade evaluator
+        # used for the main run, instead of reimplementing crash/success
+        # detection inline.
+        case_id = f"{model}/{task}/run{run}"
+        dataset = Dataset(
+            name="self_debug",
+            cases=[Case(
+                name=case_id, inputs=case_id,
+                evaluators=[StructuralGrade(mode=args.mode, task=task, reference_dir=REFERENCE_DIR)],
+            )],
+        )
+        regraded = dataset.evaluate_sync(lambda _label, output=output: output, progress=False)
+        score = regraded.cases[0].scores["StructuralGrade"]
+        results.append({
+            "mode": args.mode, "model": model, "task": task, "run": run,
+            "status": status, "rounds_used": version, "final_output_dir": str(output),
+            "selfdebug_auto_grade": (score.reason or "").split(":", 1)[0].strip(),
+            "selfdebug_reason": score.reason,
+        })
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"self_debug_{args.mode}.json"
+    path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote {path}")
 
 

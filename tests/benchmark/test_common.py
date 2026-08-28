@@ -3,24 +3,16 @@
 No Docker or live LLM calls anywhere in this module.
 """
 
-import json
-import os
-import time
-
 import pytest
 
 from benchmark.common import (
     ERROR_RE,
     NETWORK_REQUIRED_TASKS,
     clean_artifact,
-    latest_result,
     output_dir,
     prompt_path,
-    read_json,
     run_dir,
     slug,
-    timestamped_result_path,
-    write_json,
 )
 
 
@@ -76,64 +68,6 @@ def test_clean_artifact_strips_fence_without_language_tag():
 def test_clean_artifact_returns_text_unchanged_when_no_fence():
     text = "print('hi')"
     assert clean_artifact(text, "python") == text
-
-
-# ---------------------------------------------------------------------------
-# write_json / read_json round trip
-# ---------------------------------------------------------------------------
-def test_write_json_read_json_round_trip(tmp_path):
-    path = tmp_path / "nested" / "file.json"
-    value = [{"a": 1, "b": [1, 2, 3]}]
-    write_json(path, value)
-    assert read_json(path) == value
-
-
-# ---------------------------------------------------------------------------
-# latest_result() -- regression tests for the two confirmed bugs:
-#   1. prefix collision (e.g. "scores_selfdebug" matching
-#      "scores_selfdebug_resolved_*.json")
-#   2. lexicographic filename sort picking the wrong file regardless of
-#      actual write order
-# ---------------------------------------------------------------------------
-def test_latest_result_does_not_collide_with_longer_prefix(monkeypatch, tmp_path):
-    monkeypatch.setattr("benchmark.common.RESULTS_DIR", tmp_path)
-    write_json(tmp_path / "scores_selfdebug_resolved_20260101_090000.json", [{"note": "resolved"}])
-    write_json(tmp_path / "scores_selfdebug_graded_20260101_100000.json", [{"note": "graded"}])
-    write_json(tmp_path / "scores_selfdebug_final_20260101_110000.json", [{"note": "final"}])
-
-    picked = latest_result("scores_selfdebug_graded")
-    assert read_json(picked) == [{"note": "graded"}]
-
-
-def test_latest_result_uses_mtime_not_filename_string(monkeypatch, tmp_path):
-    monkeypatch.setattr("benchmark.common.RESULTS_DIR", tmp_path)
-    # Filename timestamp says "235959" is newest; force the file whose name
-    # says "000000" to actually have the newest mtime on disk.
-    older_by_name_but_newer_by_mtime = tmp_path / "scores_structural_20260101_000000.json"
-    newer_by_name_but_older_by_mtime = tmp_path / "scores_structural_20260101_235959.json"
-    write_json(newer_by_name_but_older_by_mtime, [{"note": "looks newest by filename"}])
-    write_json(older_by_name_but_newer_by_mtime, [{"note": "actually newest by mtime"}])
-
-    now = time.time()
-    os.utime(newer_by_name_but_older_by_mtime, (now - 100, now - 100))
-    os.utime(older_by_name_but_newer_by_mtime, (now, now))
-
-    picked = latest_result("scores_structural")
-    assert read_json(picked) == [{"note": "actually newest by mtime"}]
-
-
-def test_latest_result_raises_when_no_files_match(monkeypatch, tmp_path):
-    monkeypatch.setattr("benchmark.common.RESULTS_DIR", tmp_path)
-    with pytest.raises(FileNotFoundError):
-        latest_result("scores_structural")
-
-
-def test_timestamped_result_path_matches_latest_result_pattern(monkeypatch, tmp_path):
-    """timestamped_result_path()'s own output must be found by latest_result()."""
-    monkeypatch.setattr("benchmark.common.RESULTS_DIR", tmp_path)
-    path = timestamped_result_path("scores_structural")
-    write_json(path, [{"note": "ok"}])
-    assert latest_result("scores_structural") == path
 
 
 # ---------------------------------------------------------------------------

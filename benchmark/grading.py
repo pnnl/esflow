@@ -1,16 +1,36 @@
-"""
-Reproducible structural grading helpers for benchmark runs.
+"""Deterministic structural grading, shared by every benchmark run mode.
 
-This module provides the reusable deliverable detection and numerical
-comparison helpers used by the evaluation entrypoints.
+Two grades can be assigned automatically; the rest need human review:
 
+  Step 1 - Crash detection
+      CRASH iff the required final deliverable is missing:
+        task_01               -> a summary-statistics CSV
+        task_02 .. task_07    -> at least one PNG figure
+
+  Step 2 - Success detection (protocol mode only)
+      SUCCESS iff the key data file is numerically identical to the
+      reference within float64 precision (rtol=1e-12, atol=1e-15).
+
+  Step 3 - Manual review
+      UNDETERMINED runs are flagged for human inspection (see
+      make_manual_queue.py / merge_grades.py).
+
+``StructuralGrade`` is a ``pydantic_evals.Evaluator`` that combines Steps 1
+and 2 into a single numeric score, used as the evaluator on every
+``Case`` in ``benchmark/datasets.py`` (protocol, baseline, and self-debug
+retries alike).
 """
+
+from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
+
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 # Numerical tolerance for the success check.
 # Set to float64 precision following cprnc-style verification, but allowing
@@ -20,9 +40,15 @@ import xarray as xr
 RTOL = 1e-12
 ATOL = 1e-15
 
+# Grade taxonomy scores used by StructuralGrade.
+GRADE_CRASH = "crash"
+GRADE_SUCCESS = "success"
+GRADE_UNDETERMINED = "undetermined"
+SCORE_BY_GRADE = {GRADE_CRASH: 0.0, GRADE_UNDETERMINED: 0.5, GRADE_SUCCESS: 1.0}
+
 # Required final deliverable per task.
-#   "csv" -> a non-trivial CSV must exist (T1 only)
-#   "png" -> at least one PNG must exist (T2 .. T7)
+#   "csv" -> a non-trivial CSV must exist (task_01 only)
+#   "png" -> at least one PNG must exist (task_02 .. task_07)
 DELIVERABLE = {
     "task_01_obs_summary":           "csv",
     "task_02_seasonal_runoff":       "png",
@@ -229,3 +255,42 @@ def protocol_matches_reference(out_dir: Path, task: str,
             return False, f"nc: {nc_reason}"
         return True, f"csv: {csv_reason}; nc: {nc_reason}"
     return True, f"csv: {csv_reason}"
+
+
+def grade(out_dir: Path, mode: str, task: str, reference_dir: Path) -> tuple[str, str]:
+    """Return (grade, reason) for a single run's output directory.
+
+    grade is one of GRADE_CRASH / GRADE_SUCCESS / GRADE_UNDETERMINED.
+    Baseline mode is never auto-graded success in Step 2 -- filenames are
+    unpredictable free-form code output -- so it always falls to
+    undetermined once a deliverable exists.
+    """
+    ok, reason = has_deliverable(out_dir, task)
+    if not ok:
+        return GRADE_CRASH, reason
+    if mode == "protocol":
+        ref_dir = reference_dir / task
+        match, reason = protocol_matches_reference(
+            out_dir, task, find_key_csv(ref_dir, task), find_key_nc(ref_dir, task)
+        )
+        if match:
+            return GRADE_SUCCESS, reason
+    return GRADE_UNDETERMINED, reason
+
+
+@dataclass
+class StructuralGrade(Evaluator[str, Path]):
+    """Combined Steps 1 + 2 returning a numeric score.
+
+    Scores:
+      crash        -> 0.0
+      success      -> 1.0
+      undetermined -> 0.5  (needs manual review)
+    """
+    mode: str
+    task: str
+    reference_dir: Path
+
+    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
+        auto_grade, reason = grade(ctx.output, self.mode, self.task, self.reference_dir)
+        return EvaluationReason(value=SCORE_BY_GRADE[auto_grade], reason=f"{auto_grade}: {reason}")

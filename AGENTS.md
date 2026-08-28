@@ -122,17 +122,12 @@ web app.
   `requirements-test.txt` in addition to application dependencies. Tests marked
   `sampledata` use the optional local `data/sample` dataset and reference outputs;
   they skip automatically when either dataset is unavailable.
-- `pydantic_evals` datasets under `evals/` remain the separate live-LLM evaluation
-  harnesses for planner behavior and end-to-end workflow quality.
-- Real eval entrypoints (run from the repository root):
-  - `python -m evals.validate_workflow_eval` — checks the one-shot planner
-    produces catalog-valid workflows.
-  - `python evals/workflow_execution_numerical_tolerance_eval.py` — plans,
-    executes, and numerically grades (rtol=1e-12) full workflows per
-    (model, task) against references in `evals/reference_workflows/results/`.
-    Requires `./data/sample` to exist locally.
-- `requirements-eval.txt` (just `pydantic-evals`) is separate from
-  `requirements.txt`; install both to run evals.
+- `pydantic-evals` is a hard dependency (`requirements.txt`), not a separate
+  optional install — there is no standalone `evals/` package anymore. Live-LLM
+  evaluation of planner behavior and end-to-end workflow quality is done
+  through `benchmark/` (see below), which builds `pydantic_evals.Dataset`/
+  `Case` objects graded by the shared `StructuralGrade` evaluator in
+  `benchmark/grading.py`.
 
 ## Benchmark
 
@@ -157,30 +152,40 @@ web app.
 - Run a small pilot before the paid full grid, for example:
   `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`
   and `python benchmark/run_benchmark.py --mode baseline --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`.
-  Then run `python benchmark/structural_grading.py`,
-  `python benchmark/make_manual_queue.py`, and `python benchmark/merge_grades.py`.
-- `benchmark/self_debug_crashes.py --max-rounds 3` retries only structurally
-  crashed artifacts using the original model and traceback feedback. It also makes
-  live model calls. Follow it with `benchmark/resolve_selfdebug.py` (writes
-  `scores_selfdebug_resolved_*.json`), `benchmark/grade_selfdebug.py` (reads
-  that file, writes `scores_selfdebug_graded_*.json`),
-  `benchmark/make_selfdebug_manual_queue.py`, and
-  `benchmark/merge_grades_selfdebug.py`; results under `benchmark/results/` are
-  intentionally ignored. Keep these three artifact prefixes distinct
-  (`scores_selfdebug_resolved`, `scores_selfdebug_graded`,
-  `scores_selfdebug_final`) — `latest_result()` matches a prefix only when
-  followed immediately by a timestamp, so a new script must not reuse
-  `scores_selfdebug` as its own output prefix or it will collide with these.
+  Each writes a `pydantic_evals.EvaluationReport` to
+  `benchmark/results/{mode}_report.json`; grading happens inline during the
+  run via the shared `StructuralGrade` evaluator (`benchmark/grading.py`), not
+  as a separate pass over JSON files. Then run
+  `python benchmark/make_manual_queue.py --report benchmark/results/protocol_report.json --mode protocol`
+  to export cases graded `undetermined` (score 0.5) to
+  `benchmark/results/manual_review_protocol.csv` for human review, and
+  `python benchmark/merge_grades.py --report benchmark/results/protocol_report.json --mode protocol`
+  to write the resolved `final_grade` back onto each case as a report label
+  (in place, no separate `scores_final_*.json`).
+- `benchmark/self_debug_crashes.py --report benchmark/results/protocol_report.json --mode protocol --max-rounds 3`
+  retries only structurally crashed cases (`StructuralGrade` reason starting
+  with `"crash:"`) using the original model and traceback feedback. It also
+  makes live model calls. Each retry round builds a small `Dataset`/`Case`
+  pair and re-grades the repaired artifact with the *same* `StructuralGrade`
+  evaluator used for the main run — there is no separate resolve/grade/queue/
+  merge script family duplicating that logic. Writes
+  `benchmark/results/self_debug_{mode}.json` (plain JSON rows, since these are
+  retry-attempt metadata rather than a `pydantic_evals` report); results under
+  `benchmark/results/` are intentionally ignored.
 - `benchmark/run_workflow_definition` (via `common/workflow_runner.py`) swallows
   per-step tool exceptions and keeps going rather than raising, so a protocol
   crash from a missing deliverable often has no traceback in the normal sense.
-  `run_benchmark.py`'s `_collect_step_errors()` walks the execution context for
-  any step whose result contains an `error` key and writes it to
+  `benchmark/datasets.py`'s `_collect_step_errors()` walks the execution context
+  for any step whose result contains an `error` key and writes it to
   `run{N}.error.txt`, which `self_debug_crashes.py` then uses as real repair
   signal instead of falling back to `has_deliverable()`'s generic reason string.
 - Deterministic tests for this package live under `tests/benchmark/` (no Docker,
   no live LLM calls) and run as part of the normal `pytest` suite. Do **not**
   add an `__init__.py` to `tests/benchmark/` — pytest's default import mode
   would then register it as the top-level module `benchmark`, shadowing the
-  real `benchmark/` package at the repo root (this bit us once; `tests/evals/`
-  has no `__init__.py` for the same reason).
+  real `benchmark/` package at the repo root (this bit us once).
+- `benchmark/reference_workflows/results/` holds the numeric reference outputs
+  `StructuralGrade`'s Step 2 (protocol-mode numerical comparison) checks
+  against; `benchmark/reference_workflows/prompts/` holds the human-facing
+  reference YAML for each task. Both moved here from the now-deleted `evals/`
+  package.
