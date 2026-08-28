@@ -30,7 +30,7 @@ web app.
 - **Two independent planning stacks** share the same subagents and tools:
   - One-shot (`agents/planner/oneshot_planner*.py`): must return a structured
     `Workflow` in a single pass, never asks clarifying questions. Used
-    programmatically by evals (`plan_workflow_one_shot`).
+    programmatically by `benchmark/` and `mcp_server.py` (`plan_workflow_one_shot`).
   - Multistep (`agents/planner/multistep_planner*.py`): conversational, may ask
     clarifying questions and return plain text instead of a `Workflow`. Used by
     the web app (`app.py`).
@@ -39,12 +39,27 @@ web app.
   each constrained to a `Literal[...]` tool subset defined on a `Step` subclass
   in `common/workflow.py` — Pydantic enforces the tool allow-list per category,
   not the prompt.
+- **The model's final structured-output turn can silently discard the caller's
+  `Settings`.** All three planner entrypoints (`plan_workflow_one_shot` in
+  `oneshot_planner.py`; `plan_with_planner` in `oneshot_planner_executor.py`;
+  `plan_with_multistep_planner` in `multistep_planner_executor.py`) build a
+  fresh `Workflow` from `result.output`/`ctx.deps.workflow = result.output`,
+  and the model is free to rewrite `settings` from the task text (e.g. a
+  literal "save to ./output/foo" instruction) instead of echoing the
+  `Settings` object it was actually given — confirmed live: a v2 planner run
+  produced numerically correct output but wrote it to the model's own
+  guessed path, not the caller's `output_dir`, and got mis-graded as a crash
+  by the benchmark harness as a result. All three entrypoints now force the
+  caller's/session's `settings` back onto the model's output before
+  returning/updating state (`workflow.settings = settings` /
+  `result.output.settings = ctx.deps.workflow.settings`); a fourth
+  entrypoint needs the same fix if one is ever added.
 - **`mcp_server.py` is a third, stateless entrypoint** for MCP clients. It
   exposes plan, validation, execution, and combined plan-and-execute tools over
   FastMCP; Docker configures HTTP transport, while direct execution defaults to
   stdio. Unlike `app.py`'s process-global `WorkflowState`, each MCP call
   receives or returns the complete `Workflow`; it reuses the same plain-argument
-  planning and runner APIs used by the evals. The "check
+  planning and runner APIs used by `benchmark/`. The "check
   completeness -> validate -> write plan -> run" gate sequence is independently
   implemented in `execute_planned_workflow`
   (`agents/planner/oneshot_planner_executor.py`) and `execute_workflow`
@@ -73,7 +88,7 @@ web app.
 - **Workflow execution is dynamic-import based and Python-API only**
   (`common/workflow_runner.py`): there is no CLI entrypoint (no `run_workflow.py`,
   no argparse) — call `run_workflow_definition()`/`run_workflow_file()` directly
-  from Python (as `agents/planner/oneshot_planner_executor.py` and the evals do).
+  from Python (as `agents/planner/oneshot_planner_executor.py` and `benchmark/` do).
   Tools are loaded by filename lookup in the catalog/category dirs, params are
   resolved via `${step_id.outputs.key}` / `${settings.key}` string interpolation
   against a runtime `context` dict, and declared output filenames are used to
@@ -128,6 +143,20 @@ web app.
   through `benchmark/` (see below), which builds `pydantic_evals.Dataset`/
   `Case` objects graded by the shared `StructuralGrade` evaluator in
   `benchmark/grading.py`.
+- **4 known pre-existing failures in `tests/agents/test_planner_agents.py`**
+  (`test_oneshot_planner_returns_a_structured_workflow_with_test_model`,
+  `test_multistep_planner_runs_with_test_model`,
+  `test_oneshot_executor_planning_wrapper_updates_workflow_state`,
+  `test_multistep_executor_planning_wrapper_returns_agent_response`) make
+  real (failing) API calls despite using `Agent.override(model=TestModel())`
+  — the override doesn't take effect for `oneshot_planner`/`planner`'s
+  subagent-tool-calling path in this environment, so the request falls
+  through to the real configured model and gets a `ModelHTTPError`.
+  Confirmed present on `main`, reproduced identically before and after
+  unrelated changes — not a regression signal from your own edits. Other
+  tests in that same file avoid this by passing `model_override=TestModel()`
+  directly to the programmatic entrypoint (`plan_workflow_one_shot`) or by
+  monkeypatching `.run()` instead of using `.override()`.
 
 ## Benchmark
 
@@ -193,3 +222,14 @@ web app.
   `benchmark/reference_workflows/prompts/` holds the human-facing
   reference YAML for each task. Both moved here from the now-deleted `evals/`
   package.
+- `benchmark/common.py`'s `SAMPLE_CASE_NAME = "sample.v3.LR.historical"` is
+  hardcoded into every run's `Settings.case_name` in `run_planned_case()`
+  (`benchmark/datasets.py`). E3SM tools (`extract_gridded_field`,
+  `match_to_grid`, etc.) require `case_name` as a separate required param
+  from `data_dir`, and `task_02`–`task_07`'s prompts all name it literally —
+  a model may reference it via `${settings.case_name}` instead of repeating
+  the literal string per step. Before the settings-preservation fix above,
+  this was masked because models silently substituted their own guessed
+  `case_name` into the `settings` block they returned; adding an 8th task
+  against different sample data means updating `SAMPLE_CASE_NAME` too, or
+  `${settings.case_name}` references will fail to resolve at execution time.
