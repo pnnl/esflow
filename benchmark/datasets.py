@@ -131,8 +131,20 @@ def parse_case_name(name: str) -> tuple[str, str, int]:
 async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path:
     """Plan, validate, and execute a protocol run. Returns the output dir.
 
-    Raises on hard failures (planning/validation errors) so pydantic_evals
-    records them as a ReportCaseFailure instead of a silently-graded case.
+    Catalog validation failures and runner rejections are *expected* LLM
+    output-quality failure modes -- not exceptional -- so this returns
+    out_dir normally for them (with the reason written to .error.txt) and
+    lets StructuralGrade's has_deliverable() check grade the run crash,
+    since no deliverable was ever produced. This keeps every run in
+    report.cases, where make_manual_queue.py/merge_grades.py/
+    self_debug_crashes.py look, instead of report.failures, which they
+    don't.
+
+    Only genuinely unexpected exceptions (e.g. an Agent.run() call failing
+    due to a network/API error, or a bug in the harness itself) still
+    propagate, landing in pydantic_evals' report.failures -- those are
+    infra/tooling failures, not model-quality signal, and shouldn't be
+    counted as a model "crash" in the benchmark stats.
     """
     model_name, task, run = parse_case_name(label)
     artifact = run_dir("protocol", model_name, task) / f"run{run}.yaml"
@@ -146,12 +158,16 @@ async def run_protocol_case(label: str, *, skip_execution: bool = False) -> Path
         workflow.write_to_file(artifact)
         errors = validate_workflow(workflow.to_yaml_dict())
         if errors:
-            raise RuntimeError("catalog validation failed: " + "; ".join(errors))
+            artifact.with_suffix(".error.txt").write_text(
+                "catalog validation failed: " + "; ".join(errors), encoding="utf-8"
+            )
+            return out_dir
         if skip_execution:
             return out_dir
         context = run_workflow_definition(workflow.to_yaml_dict(), verbose=False)
         if context is None:
-            raise RuntimeError("runner rejected workflow")
+            artifact.with_suffix(".error.txt").write_text("runner rejected workflow", encoding="utf-8")
+            return out_dir
         step_errors = _collect_step_errors(context)
         if step_errors:
             artifact.with_suffix(".error.txt").write_text(step_errors, encoding="utf-8")
@@ -167,8 +183,19 @@ async def run_baseline_case(
 ) -> Path:
     """Generate, syntax/import-check, and sandbox-execute a baseline run.
 
-    Returns the output dir. Raises on hard failures (syntax/import errors)
-    so pydantic_evals records them as a ReportCaseFailure.
+    Returns the output dir. Syntax and import-resolution failures are
+    *expected* LLM output-quality failure modes -- not exceptional -- so
+    this returns out_dir normally for them (with the reason written to
+    run{N}_execution.txt, the same file self_debug_crashes.py already
+    reads for baseline-mode error lookup) and lets StructuralGrade's
+    has_deliverable() check grade the run crash, since no deliverable was
+    ever produced. This keeps every run in report.cases, where
+    make_manual_queue.py/merge_grades.py/self_debug_crashes.py look,
+    instead of report.failures, which they don't.
+
+    Only genuinely unexpected exceptions still propagate, landing in
+    pydantic_evals' report.failures -- those are infra/tooling failures,
+    not model-quality signal.
     """
     model_name, task, run = parse_case_name(label)
     artifact = run_dir("baseline", model_name, task) / f"run{run}.py"
@@ -185,10 +212,12 @@ async def run_baseline_case(
 
         ok, msg = score_python_s0(code)
         if not ok:
-            raise RuntimeError(f"syntax check failed: {msg}")
+            logs.write_text(f"syntax check failed: {msg}", encoding="utf-8")
+            return out_dir
         ok, msg = score_python_s1(code)
         if not ok:
-            raise RuntimeError(f"import check failed: {msg}")
+            logs.write_text(f"import check failed: {msg}", encoding="utf-8")
+            return out_dir
 
         if skip_execution:
             return out_dir
