@@ -20,6 +20,7 @@ from benchmark.grading import (
     GRADE_SUCCESS,
     GRADE_UNDETERMINED,
     MIN_CSV_BYTES,
+    TOLERANCE_MATCH_REASON,
     StructuralGrade,
     csv_matches,
     find_key_csv,
@@ -112,7 +113,7 @@ def test_csv_matches_handles_order_tolerance_nan_and_failures(tmp_path):
     _write_csv(reference, [{"id": "a", "value": "1.0", "note": "ok"}, {"id": "b", "value": "nan", "note": "ok"}])
     _write_csv(reordered, [{"id": "b", "value": "nan", "note": "ok"}, {"id": "a", "value": "1.0000000000005", "note": "ok"}])
 
-    assert csv_matches(reference, reordered) == (True, "match within 1%")
+    assert csv_matches(reference, reordered) == (True, TOLERANCE_MATCH_REASON)
 
     changed = tmp_path / "changed.csv"
     _write_csv(changed, [{"id": "a", "value": "2.0", "note": "ok"}, {"id": "b", "value": "nan", "note": "changed"}])
@@ -130,7 +131,7 @@ def test_nc_matches_handles_matching_missing_variables_shape_and_value_differenc
     matching = tmp_path / "matching.nc"
     _write_dataset(reference, {"runoff": np.array([1.0, np.nan])})
     _write_dataset(matching, {"runoff": np.array([1.0 + 5e-13, np.nan])})
-    assert nc_matches(reference, matching) == (True, "match within 1%")
+    assert nc_matches(reference, matching) == (True, TOLERANCE_MATCH_REASON)
 
     no_shared = tmp_path / "no_shared.nc"
     _write_dataset(no_shared, {"other": np.array([1.0, 2.0])})
@@ -142,7 +143,7 @@ def test_nc_matches_handles_matching_missing_variables_shape_and_value_differenc
 
     changed = tmp_path / "changed.nc"
     _write_dataset(changed, {"runoff": np.array([2.0, np.nan])})
-    assert nc_matches(reference, changed) == (False, "runoff: values differ beyond 1%")
+    assert nc_matches(reference, changed) == (False, "runoff: values differ beyond tolerance")
 
 
 def test_protocol_matches_reference_requires_csv_and_optional_netcdf(tmp_path):
@@ -153,7 +154,7 @@ def test_protocol_matches_reference_requires_csv_and_optional_netcdf(tmp_path):
     assert protocol_matches_reference(tmp_path, "task_01_obs_summary", reference_csv, None) == (False, "key csv not found in run")
 
     _write_csv(tmp_path / "summary_stats.csv", [{"id": "a", "value": "1.0"}])
-    assert protocol_matches_reference(tmp_path, "task_01_obs_summary", reference_csv, None) == (True, "csv: match within 1%")
+    assert protocol_matches_reference(tmp_path, "task_01_obs_summary", reference_csv, None) == (True, f"csv: {TOLERANCE_MATCH_REASON}")
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 """pydantic_evals Dataset/Case construction for the v2 benchmark.
 
-Each (model, task) pair becomes a Case; ``--runs N`` maps onto pydantic_evals'
-``repeat=N`` on ``Dataset.evaluate``/``evaluate_sync``, and grading happens
-inline via the shared ``StructuralGrade`` evaluator (``benchmark/grading.py``)
-instead of a second pass over JSON files.
+Each (model, task, run) triple becomes its own Case -- make_dataset() builds
+one Case per run directly, rather than using pydantic_evals' repeat= kwarg,
+so each run keeps its own artifact/output directory and case name. Grading
+happens inline via the shared ``StructuralGrade`` evaluator
+(``benchmark/grading.py``) instead of a second pass over JSON files.
 """
 
 from __future__ import annotations

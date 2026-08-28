@@ -40,6 +40,11 @@ from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorCont
 RTOL = 1e-12
 ATOL = 1e-15
 
+# Reason text used when csv_matches()/nc_matches() succeed; kept as a
+# constant since it's asserted against directly in tests and describes the
+# actual tolerance enforced above, not an approximate percentage.
+TOLERANCE_MATCH_REASON = f"match within float64 tolerance (rtol={RTOL}, atol={ATOL})"
+
 # Grade taxonomy scores used by StructuralGrade.
 GRADE_CRASH = "crash"
 GRADE_SUCCESS = "success"
@@ -195,7 +200,7 @@ def csv_matches(ref_path: Path, test_path: Path):
                 continue
             if not np.isclose(rf, tf, rtol=RTOL, atol=ATOL, equal_nan=True):
                 return False, f"{col}: {rv} vs {tv}"
-    return True, "match within 1%"
+    return True, TOLERANCE_MATCH_REASON
 
 
 def nc_matches(ref_path: Path, test_path: Path):
@@ -222,8 +227,8 @@ def nc_matches(ref_path: Path, test_path: Path):
                 continue
             if not np.allclose(rv_f, tv_f, rtol=RTOL, atol=ATOL,
                                equal_nan=True):
-                return False, f"{var}: values differ beyond 1%"
-        return True, "match within 1%"
+                return False, f"{var}: values differ beyond tolerance"
+        return True, TOLERANCE_MATCH_REASON
     finally:
         ref_ds.close()
         test_ds.close()
