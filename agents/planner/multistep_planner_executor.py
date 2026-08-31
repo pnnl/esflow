@@ -33,6 +33,11 @@ async def plan_with_multistep_planner(ctx: RunContext[WorkflowState], task: str)
     """Use the multistep planner as a subagent to create or revise the workflow."""
     result = await planner.run(task, deps=ctx.deps)
     if isinstance(result.output, Workflow):
+        # Preserve the session's settings across the update -- the model's
+        # final structured-output turn is free to rewrite `settings` from the
+        # task text, discarding the actual output_dir/data_dir. See the
+        # matching fix in plan_workflow_one_shot().
+        result.output.settings = ctx.deps.workflow.settings
         ctx.deps.workflow = result.output
         return (
             f"Planner updated the workflow to {len(result.output.steps)} step(s). "

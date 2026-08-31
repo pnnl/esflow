@@ -1,4 +1,5 @@
 pydantic-ai
+pydantic-evals
 fastmcp
 PyYAML
 

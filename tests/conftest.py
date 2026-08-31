@@ -12,7 +12,7 @@ from common.workflow_validation import _catalog_singletons
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DATA_DIR = REPO_ROOT / "data" / "sample"
-REFERENCE_RESULTS_DIR = REPO_ROOT / "evals" / "reference_workflows" / "results"
+REFERENCE_RESULTS_DIR = REPO_ROOT / "benchmark" / "reference_workflows" / "results"
 
 
 @pytest.fixture(autouse=True)

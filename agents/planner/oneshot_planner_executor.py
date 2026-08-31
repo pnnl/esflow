@@ -91,6 +91,12 @@ async def plan_with_planner(ctx: RunContext[WorkflowState], task: str) -> str:
     """Use the planner agent as a subagent to create or revise the workflow."""
     result = await oneshot_planner.run(task, deps=ctx.deps, output_type=Workflow)
     if isinstance(result.output, Workflow):
+        # The model's final structured-output turn constructs a fresh Workflow
+        # and is free to rewrite `settings` from the task text (e.g. a literal
+        # "save to ./output/foo" instruction), discarding the session's actual
+        # settings. Preserve them across the update -- see the matching fix in
+        # plan_workflow_one_shot().
+        result.output.settings = ctx.deps.workflow.settings
         ctx.deps.workflow = result.output
         return (
             f"Planner updated the workflow to {len(result.output.steps)} step(s). "

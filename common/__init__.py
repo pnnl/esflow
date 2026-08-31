@@ -1,8 +1,14 @@
 """Shared state and utilities for planner and subagents."""
 
 from dataclasses import dataclass
+from contextvars import ContextVar
+
+from pydantic_ai.models import Model
 
 from common.workflow import Workflow
+
+
+_model_override: ContextVar[Model | None] = ContextVar("model_override", default=None)
 
 
 @dataclass

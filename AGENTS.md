@@ -30,7 +30,7 @@ web app.
 - **Two independent planning stacks** share the same subagents and tools:
   - One-shot (`agents/planner/oneshot_planner*.py`): must return a structured
     `Workflow` in a single pass, never asks clarifying questions. Used
-    programmatically by evals (`plan_workflow_one_shot`).
+    programmatically by `benchmark/` and `mcp_server.py` (`plan_workflow_one_shot`).
   - Multistep (`agents/planner/multistep_planner*.py`): conversational, may ask
     clarifying questions and return plain text instead of a `Workflow`. Used by
     the web app (`app.py`).
@@ -39,12 +39,27 @@ web app.
   each constrained to a `Literal[...]` tool subset defined on a `Step` subclass
   in `common/workflow.py` — Pydantic enforces the tool allow-list per category,
   not the prompt.
+- **The model's final structured-output turn can silently discard the caller's
+  `Settings`.** All three planner entrypoints (`plan_workflow_one_shot` in
+  `oneshot_planner.py`; `plan_with_planner` in `oneshot_planner_executor.py`;
+  `plan_with_multistep_planner` in `multistep_planner_executor.py`) build a
+  fresh `Workflow` from `result.output`/`ctx.deps.workflow = result.output`,
+  and the model is free to rewrite `settings` from the task text (e.g. a
+  literal "save to ./output/foo" instruction) instead of echoing the
+  `Settings` object it was actually given — confirmed live: a v2 planner run
+  produced numerically correct output but wrote it to the model's own
+  guessed path, not the caller's `output_dir`, and got mis-graded as a crash
+  by the benchmark harness as a result. All three entrypoints now force the
+  caller's/session's `settings` back onto the model's output before
+  returning/updating state (`workflow.settings = settings` /
+  `result.output.settings = ctx.deps.workflow.settings`); a fourth
+  entrypoint needs the same fix if one is ever added.
 - **`mcp_server.py` is a third, stateless entrypoint** for MCP clients. It
   exposes plan, validation, execution, and combined plan-and-execute tools over
   FastMCP; Docker configures HTTP transport, while direct execution defaults to
   stdio. Unlike `app.py`'s process-global `WorkflowState`, each MCP call
   receives or returns the complete `Workflow`; it reuses the same plain-argument
-  planning and runner APIs used by the evals. The "check
+  planning and runner APIs used by `benchmark/`. The "check
   completeness -> validate -> write plan -> run" gate sequence is independently
   implemented in `execute_planned_workflow`
   (`agents/planner/oneshot_planner_executor.py`) and `execute_workflow`
@@ -73,7 +88,7 @@ web app.
 - **Workflow execution is dynamic-import based and Python-API only**
   (`common/workflow_runner.py`): there is no CLI entrypoint (no `run_workflow.py`,
   no argparse) — call `run_workflow_definition()`/`run_workflow_file()` directly
-  from Python (as `agents/planner/oneshot_planner_executor.py` and the evals do).
+  from Python (as `agents/planner/oneshot_planner_executor.py` and `benchmark/` do).
   Tools are loaded by filename lookup in the catalog/category dirs, params are
   resolved via `${step_id.outputs.key}` / `${settings.key}` string interpolation
   against a runtime `context` dict, and declared output filenames are used to
@@ -122,14 +137,99 @@ web app.
   `requirements-test.txt` in addition to application dependencies. Tests marked
   `sampledata` use the optional local `data/sample` dataset and reference outputs;
   they skip automatically when either dataset is unavailable.
-- `pydantic_evals` datasets under `evals/` remain the separate live-LLM evaluation
-  harnesses for planner behavior and end-to-end workflow quality.
-- Real eval entrypoints (run from the repository root):
-  - `python -m evals.validate_workflow_eval` — checks the one-shot planner
-    produces catalog-valid workflows.
-  - `python evals/workflow_execution_numerical_tolerance_eval.py` — plans,
-    executes, and numerically grades (rtol=1e-12) full workflows per
-    (model, task) against references in `evals/reference_workflows/results/`.
-    Requires `./data/sample` to exist locally.
-- `requirements-eval.txt` (just `pydantic-evals`) is separate from
-  `requirements.txt`; install both to run evals.
+- `pydantic-evals` is a hard dependency (`requirements.txt`), not a separate
+  optional install — there is no standalone `evals/` package anymore. Live-LLM
+  evaluation of planner behavior and end-to-end workflow quality is done
+  through `benchmark/` (see below), which builds `pydantic_evals.Dataset`/
+  `Case` objects graded by the shared `StructuralGrade` evaluator in
+  `benchmark/grading.py`.
+- **4 known pre-existing failures in `tests/agents/test_planner_agents.py`**
+  (`test_oneshot_planner_returns_a_structured_workflow_with_test_model`,
+  `test_multistep_planner_runs_with_test_model`,
+  `test_oneshot_executor_planning_wrapper_updates_workflow_state`,
+  `test_multistep_executor_planning_wrapper_returns_agent_response`) make
+  real (failing) API calls despite using `Agent.override(model=TestModel())`
+  — the override doesn't take effect for `oneshot_planner`/`planner`'s
+  subagent-tool-calling path in this environment, so the request falls
+  through to the real configured model and gets a `ModelHTTPError`.
+  Confirmed present on `main`, reproduced identically before and after
+  unrelated changes — not a regression signal from your own edits. Other
+  tests in that same file avoid this by passing `model_override=TestModel()`
+  directly to the programmatic entrypoint (`plan_workflow_one_shot`) or by
+  monkeypatching `.run()` instead of using `.override()`.
+
+## Benchmark
+
+- `benchmark/` replicates the paper's comparison of v2's supervisor/planner
+  architecture against a single-agent baseline, using the seven prompts
+  under `benchmark/protocol/`. Both arms read the exact same task prompt --
+  the task doesn't change, only which planning architecture receives it:
+  - `--mode protocol` uses the one-shot planner
+    (`agents/planner/oneshot_planner.py`), which delegates to category
+    subagents and self-checks via `check_completeness`/
+    `run_workflow_validation` before returning.
+  - `--mode single_agent` uses `agents/planner/single_agent_planner.py`, a
+    single undelegated LLM call given the full tool catalog inlined via
+    `common.config.load_prompt()`, with no subagents and no self-check
+    tools -- reproducing v1's original single-agent architecture
+    (`call_llm` in v1's `benchmark/run_benchmark.py`) against v2's own tool
+    catalog and data, instead of comparing against LLM-generated free-form
+    Python.
+  Both arms produce structured `Workflow` YAML and execute identically via
+  `run_workflow_definition()`, unsandboxed on the host with real network
+  access -- there is no Docker sandbox or free-code-generation path in this
+  benchmark.
+- Run a small pilot before the paid full grid, for example:
+  `python benchmark/run_benchmark.py --mode protocol --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`
+  and `python benchmark/run_benchmark.py --mode single_agent --models "GPT 5.4" --tasks task_01_obs_summary --runs 1`.
+  Each writes a `pydantic_evals.EvaluationReport` to
+  `benchmark/results/{mode}_report.json`; grading happens inline during the
+  run via the shared `StructuralGrade` evaluator (`benchmark/grading.py`), not
+  as a separate pass over JSON files. `StructuralGrade`'s Step 2 (numerical
+  reference comparison) applies identically to both arms, since both produce
+  structured, predictable-filename output. Then run
+  `python benchmark/make_manual_queue.py --report benchmark/results/protocol_report.json --mode protocol`
+  to export cases graded `undetermined` (score 0.5) to
+  `benchmark/results/manual_review_protocol.csv` for human review, and
+  `python benchmark/merge_grades.py --report benchmark/results/protocol_report.json --mode protocol`
+  to write the resolved `final_grade` back onto each case as a report label
+  (in place, no separate `scores_final_*.json`).
+- `benchmark/self_debug_crashes.py --report benchmark/results/protocol_report.json --mode protocol --max-rounds 3`
+  retries only structurally crashed cases (`StructuralGrade` reason starting
+  with `"crash:"`) using the original model and traceback feedback. It also
+  makes live model calls. Each retry round builds a small `Dataset`/`Case`
+  pair and re-grades the repaired artifact with the *same* `StructuralGrade`
+  evaluator used for the main run — there is no separate resolve/grade/queue/
+  merge script family duplicating that logic. Both arms share one repair code
+  path (`execute_workflow()`) since both produce YAML. Writes
+  `benchmark/results/self_debug_{mode}.json` (plain JSON rows, since these are
+  retry-attempt metadata rather than a `pydantic_evals` report); results under
+  `benchmark/results/` are intentionally ignored.
+- `benchmark/run_workflow_definition` (via `common/workflow_runner.py`) swallows
+  per-step tool exceptions and keeps going rather than raising, so a crash
+  from a missing deliverable often has no traceback in the normal sense.
+  `benchmark/datasets.py`'s `_collect_step_errors()` walks the execution context
+  for any step whose result contains an `error` key and writes it to
+  `run{N}.error.txt`, which `self_debug_crashes.py` then uses as real repair
+  signal instead of falling back to `has_deliverable()`'s generic reason string.
+- Deterministic tests for this package live under `tests/benchmark/` (no
+  live LLM calls) and run as part of the normal `pytest` suite. Do **not**
+  add an `__init__.py` to `tests/benchmark/` — pytest's default import mode
+  would then register it as the top-level module `benchmark`, shadowing the
+  real `benchmark/` package at the repo root (this bit us once).
+- `benchmark/reference_workflows/results/` holds the numeric reference outputs
+  `StructuralGrade`'s Step 2 (numerical comparison) checks against;
+  `benchmark/reference_workflows/prompts/` holds the human-facing
+  reference YAML for each task. Both moved here from the now-deleted `evals/`
+  package.
+- `benchmark/common.py`'s `SAMPLE_CASE_NAME = "sample.v3.LR.historical"` is
+  hardcoded into every run's `Settings.case_name` in `run_planned_case()`
+  (`benchmark/datasets.py`). E3SM tools (`extract_gridded_field`,
+  `match_to_grid`, etc.) require `case_name` as a separate required param
+  from `data_dir`, and `task_02`–`task_07`'s prompts all name it literally —
+  a model may reference it via `${settings.case_name}` instead of repeating
+  the literal string per step. Before the settings-preservation fix above,
+  this was masked because models silently substituted their own guessed
+  `case_name` into the `settings` block they returned; adding an 8th task
+  against different sample data means updating `SAMPLE_CASE_NAME` too, or
+  `${settings.case_name}` references will fail to resolve at execution time.

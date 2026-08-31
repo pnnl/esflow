@@ -1,16 +1,42 @@
-"""
-Reproducible structural grading helpers for benchmark runs.
+"""Deterministic structural grading, shared by every benchmark run mode.
 
-This module provides the reusable deliverable detection and numerical
-comparison helpers used by the evaluation entrypoints.
+Two grades can be assigned automatically; the rest need human review:
 
+  Step 1 - Crash detection
+      CRASH iff the required final deliverable is missing:
+        task_01               -> a summary-statistics CSV
+        task_02 .. task_07    -> at least one PNG figure
+
+  Step 2 - Success detection
+      SUCCESS iff the key data file is numerically identical to the
+      reference within float64 precision (rtol=1e-12, atol=1e-15). Applies
+      identically to both benchmark arms -- "protocol" (the v2 supervisor/
+      planner architecture, agents/planner/oneshot_planner.py) and
+      "single_agent" (a single undelegated LLM call given the tool catalog,
+      agents/planner/single_agent_planner.py, matching v1's original
+      architecture) -- since both produce structured Workflow YAML with
+      predictable, catalog-defined output filenames.
+
+  Step 3 - Manual review
+      UNDETERMINED runs are flagged for human inspection (see
+      make_manual_queue.py / merge_grades.py).
+
+``StructuralGrade`` is a ``pydantic_evals.Evaluator`` that combines Steps 1
+and 2 into a single numeric score, used as the evaluator on every
+``Case`` in ``benchmark/datasets.py`` (protocol, single_agent, and
+self-debug retries alike).
 """
+
+from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
+
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 # Numerical tolerance for the success check.
 # Set to float64 precision following cprnc-style verification, but allowing
@@ -20,9 +46,20 @@ import xarray as xr
 RTOL = 1e-12
 ATOL = 1e-15
 
+# Reason text used when csv_matches()/nc_matches() succeed; kept as a
+# constant since it's asserted against directly in tests and describes the
+# actual tolerance enforced above, not an approximate percentage.
+TOLERANCE_MATCH_REASON = f"match within float64 tolerance (rtol={RTOL}, atol={ATOL})"
+
+# Grade taxonomy scores used by StructuralGrade.
+GRADE_CRASH = "crash"
+GRADE_SUCCESS = "success"
+GRADE_UNDETERMINED = "undetermined"
+SCORE_BY_GRADE = {GRADE_CRASH: 0.0, GRADE_UNDETERMINED: 0.5, GRADE_SUCCESS: 1.0}
+
 # Required final deliverable per task.
-#   "csv" -> a non-trivial CSV must exist (T1 only)
-#   "png" -> at least one PNG must exist (T2 .. T7)
+#   "csv" -> a non-trivial CSV must exist (task_01 only)
+#   "png" -> at least one PNG must exist (task_02 .. task_07)
 DELIVERABLE = {
     "task_01_obs_summary":           "csv",
     "task_02_seasonal_runoff":       "png",
@@ -33,10 +70,9 @@ DELIVERABLE = {
     "task_07_integrated_diagnostic": "png",
 }
 
-# Filename keywords used to locate the key data file in a protocol
-# run for Step 2's numerical comparison. Protocol runs use validated
-# tools so filenames are predictable; baseline runs are not auto-graded
-# in Step 2.
+# Filename keywords used to locate the key data file for Step 2's numerical
+# comparison. Both benchmark arms use the same validated tool catalog, so
+# output filenames are predictable for protocol and single_agent alike.
 KEY_CSV_PATTERNS = {
     "task_01_obs_summary":           ["summary", "stats"],
     "task_02_seasonal_runoff":       ["stats", "global"],
@@ -169,7 +205,7 @@ def csv_matches(ref_path: Path, test_path: Path):
                 continue
             if not np.isclose(rf, tf, rtol=RTOL, atol=ATOL, equal_nan=True):
                 return False, f"{col}: {rv} vs {tv}"
-    return True, "match within 1%"
+    return True, TOLERANCE_MATCH_REASON
 
 
 def nc_matches(ref_path: Path, test_path: Path):
@@ -196,8 +232,8 @@ def nc_matches(ref_path: Path, test_path: Path):
                 continue
             if not np.allclose(rv_f, tv_f, rtol=RTOL, atol=ATOL,
                                equal_nan=True):
-                return False, f"{var}: values differ beyond 1%"
-        return True, "match within 1%"
+                return False, f"{var}: values differ beyond tolerance"
+        return True, TOLERANCE_MATCH_REASON
     finally:
         ref_ds.close()
         test_ds.close()
@@ -229,3 +265,46 @@ def protocol_matches_reference(out_dir: Path, task: str,
             return False, f"nc: {nc_reason}"
         return True, f"csv: {csv_reason}; nc: {nc_reason}"
     return True, f"csv: {csv_reason}"
+
+
+def grade(out_dir: Path, task: str, reference_dir: Path) -> tuple[str, str]:
+    """Return (grade, reason) for a single run's output directory.
+
+    grade is one of GRADE_CRASH / GRADE_SUCCESS / GRADE_UNDETERMINED.
+    Both "protocol" (agents/planner/oneshot_planner.py) and "single_agent"
+    (agents/planner/single_agent_planner.py) produce structured Workflow
+    YAML with predictable, catalog-defined output filenames, so Step 2
+    (numerical reference comparison) applies to both arms identically.
+    """
+    ok, reason = has_deliverable(out_dir, task)
+    if not ok:
+        return GRADE_CRASH, reason
+    ref_dir = reference_dir / task
+    match, reason = protocol_matches_reference(
+        out_dir, task, find_key_csv(ref_dir, task), find_key_nc(ref_dir, task)
+    )
+    if match:
+        return GRADE_SUCCESS, reason
+    return GRADE_UNDETERMINED, reason
+
+
+@dataclass
+class StructuralGrade(Evaluator[str, Path]):
+    """Combined Steps 1 + 2 returning a numeric score.
+
+    Scores:
+      crash        -> 0.0
+      success      -> 1.0
+      undetermined -> 0.5  (needs manual review)
+
+    `mode` is descriptive only (used by callers for path/report labeling);
+    grading behavior no longer varies by mode -- protocol and single_agent
+    are graded identically since both produce structured Workflow YAML.
+    """
+    mode: str
+    task: str
+    reference_dir: Path
+
+    def evaluate(self, ctx: EvaluatorContext[str, Path]) -> EvaluationReason:
+        auto_grade, reason = grade(ctx.output, self.task, self.reference_dir)
+        return EvaluationReason(value=SCORE_BY_GRADE[auto_grade], reason=f"{auto_grade}: {reason}")

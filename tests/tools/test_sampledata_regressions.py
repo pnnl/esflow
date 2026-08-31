@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from evals.structural_grading_helpers import csv_matches
+from benchmark.grading import csv_matches
 from tools.analyzers.compute_summary_stats import run
 
 
