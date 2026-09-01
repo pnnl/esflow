@@ -21,13 +21,11 @@ TASKS = [
     "task_07_integrated_diagnostic",
 ]
 
-# Current v2 equivalents of the five non-local models in the v1 paper suite.
+# Current pilot models for the default benchmark run.
 PILOT_MODELS = [
-    "Claude Opus 4.8",
-    "GPT 5.4",
-    "Gemini 3.5 Flash",
-    "GPT o4 Mini",
-    "Claude Haiku 4.5",
+    "GPT 5.6 Terra",
+    "Claude Sonnet 5",
+    "Gemini 3.7 Flash",
 ]
 
 # All six E3SM-dependent tasks (task_02..task_07) reference this exact case
