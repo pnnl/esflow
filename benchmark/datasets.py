@@ -24,6 +24,7 @@ import traceback
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_evals import Case, Dataset
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
@@ -81,14 +82,18 @@ async def run_planned_case(
 ) -> Path:
     """Plan (via the mode's planner), validate, and execute a run.
 
-    Returns the output dir. Catalog validation failures and runner
-    rejections are *expected* LLM output-quality failure modes -- not
-    exceptional -- so this returns out_dir normally for them (with the
-    reason written to .error.txt) and lets StructuralGrade's
-    has_deliverable() check grade the run crash, since no deliverable was
-    ever produced. This keeps every run in report.cases, where
-    make_manual_queue.py/merge_grades.py/self_debug_crashes.py look,
-    instead of report.failures, which they don't.
+    Returns the output dir. Catalog validation failures, runner rejections,
+    and the planner exhausting its structured-output validation retries
+    (UnexpectedModelBehavior -- the model returned output that didn't match
+    a subagent's typed Step schema, e.g. an invalid tool name, and didn't
+    correct it within the retry budget) are all *expected* LLM
+    output-quality failure modes -- not exceptional -- so this returns
+    out_dir normally for them (with the reason written to .error.txt) and
+    lets StructuralGrade's has_deliverable() check grade the run as a
+    crash, since no deliverable was ever produced. This keeps every run in
+    report.cases, where make_manual_queue.py/merge_grades.py/
+    self_debug_crashes.py look, instead of report.failures, which they
+    don't.
 
     Only genuinely unexpected exceptions (e.g. an Agent.run() call failing
     due to a network/API error, or a bug in the harness itself) still
@@ -108,6 +113,13 @@ async def run_planned_case(
 
     try:
         workflow = await planner(prompt, settings, MODELS[model_name])
+    except UnexpectedModelBehavior as exc:
+        artifact.with_suffix(".error.txt").write_text(
+            f"planner failed to produce valid structured output: {exc}", encoding="utf-8"
+        )
+        return out_dir
+
+    try:
         workflow.write_to_file(artifact)
         errors = validate_workflow(workflow.to_yaml_dict())
         if errors:

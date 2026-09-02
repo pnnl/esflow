@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.retries import RetryConfig
 from pydantic_evals.reporting import EvaluationReportAdapter
 from tenacity import retry_if_exception, stop_after_attempt, wait_exponential
@@ -40,17 +40,30 @@ from benchmark.datasets import make_dataset, run_planned_case
 # signal -- retry the whole plan+execute case a few times with backoff
 # rather than letting one bad gateway response or slow connection sink an
 # otherwise-valid case.
+#
+# UsageLimitExceeded (the planner's tool-calling loop needing more requests
+# than oneshot_planner.py's configured limit) is included here too: unlike a
+# workflow that's genuinely invalid (wrong param, hallucinated reference --
+# real model-quality signal that should be graded as a crash), how many
+# turns the planner needs to converge is itself noisy per-attempt --
+# confirmed live by re-running a case that hit the limit in one attempt and
+# having it resolve within budget on the very next attempt with no other
+# change. Retrying gives the model another independent attempt rather than
+# letting one unlucky number of turns silently drop the case from
+# report.cases into report.failures (excluded from grading entirely).
 _TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 
 
-def _is_transient_gateway_error(exc: BaseException) -> bool:
+def _is_transient_failure(exc: BaseException) -> bool:
     if isinstance(exc, ModelHTTPError):
         return exc.status_code in _TRANSIENT_STATUS_CODES
+    if isinstance(exc, UsageLimitExceeded):
+        return True
     return isinstance(exc, httpx.TimeoutException)
 
 
-RETRY_TRANSIENT_GATEWAY_ERRORS: RetryConfig = {
-    "retry": retry_if_exception(_is_transient_gateway_error),
+RETRY_TRANSIENT_FAILURES: RetryConfig = {
+    "retry": retry_if_exception(_is_transient_failure),
     "stop": stop_after_attempt(4),
     "wait": wait_exponential(multiplier=2, min=2, max=30),
 }
@@ -95,7 +108,7 @@ def main() -> None:
         return await run_planned_case(args.mode, label, skip_execution=args.skip_execution)
 
     report = dataset.evaluate_sync(
-        task_fn, max_concurrency=args.concurrency, retry_task=RETRY_TRANSIENT_GATEWAY_ERRORS
+        task_fn, max_concurrency=args.concurrency, retry_task=RETRY_TRANSIENT_FAILURES
     )
     report.print(include_reasons=True)
 
