@@ -3,7 +3,10 @@
 
 Builds a pydantic_evals Dataset of (model, task, run) Cases graded inline by
 the shared StructuralGrade evaluator (benchmark/grading.py), then writes one
-EvaluationReport per mode to benchmark/results/{mode}_report.json.
+EvaluationReport per mode to benchmark/results/{mode}_report.json (or to
+--output, if given -- see benchmark/RUNBOOK.md for chunked, per-model
+invocations that write distinct report files and are combined afterward with
+merge_reports.py).
 
 Two arms:
   --mode protocol      -- v2's supervisor/planner architecture
@@ -61,6 +64,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--skip-execution", action="store_true")
     p.add_argument("--concurrency", type=int, default=None, help="max concurrent cases")
+    p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="report path (default: benchmark/results/{mode}_report.json); "
+        "use a distinct path per chunk (e.g. per model) to avoid overwriting "
+        "another chunk's report, then combine with merge_reports.py",
+    )
     return p
 
 
@@ -89,7 +100,8 @@ def main() -> None:
     report.print(include_reasons=True)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = RESULTS_DIR / f"{args.mode}_report.json"
+    path = args.output or (RESULTS_DIR / f"{args.mode}_report.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(EvaluationReportAdapter.dump_json(report, indent=2))
     print(f"wrote {path}")
 
