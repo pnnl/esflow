@@ -19,11 +19,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import httpx
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.retries import RetryConfig
 from pydantic_evals.reporting import EvaluationReportAdapter
+from tenacity import retry_if_exception, stop_after_attempt, wait_exponential
 
 from common.config import MODELS
 from benchmark.common import PILOT_MODELS, RESULTS_DIR, TASKS
 from benchmark.datasets import make_dataset, run_planned_case
+
+# Gateway 5xx (seen in practice as sporadic 504 Gateway Time-out from the PNNL
+# Depot gateway, especially for Gemini) and read/connect timeouts on the raw
+# HTTP transport (httpx.TimeoutException, seen surfacing as an unwrapped
+# httpx.ReadTimeout from google-genai's own client, not a pydantic-ai
+# exception) are transient infra flakiness, not a model- or code-quality
+# signal -- retry the whole plan+execute case a few times with backoff
+# rather than letting one bad gateway response or slow connection sink an
+# otherwise-valid case.
+_TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
+
+
+def _is_transient_gateway_error(exc: BaseException) -> bool:
+    if isinstance(exc, ModelHTTPError):
+        return exc.status_code in _TRANSIENT_STATUS_CODES
+    return isinstance(exc, httpx.TimeoutException)
+
+
+RETRY_TRANSIENT_GATEWAY_ERRORS: RetryConfig = {
+    "retry": retry_if_exception(_is_transient_gateway_error),
+    "stop": stop_after_attempt(4),
+    "wait": wait_exponential(multiplier=2, min=2, max=30),
+}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -56,7 +83,9 @@ def main() -> None:
     async def task_fn(label: str) -> Path:
         return await run_planned_case(args.mode, label, skip_execution=args.skip_execution)
 
-    report = dataset.evaluate_sync(task_fn, max_concurrency=args.concurrency)
+    report = dataset.evaluate_sync(
+        task_fn, max_concurrency=args.concurrency, retry_task=RETRY_TRANSIENT_GATEWAY_ERRORS
+    )
     report.print(include_reasons=True)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

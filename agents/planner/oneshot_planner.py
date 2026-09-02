@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.usage import UsageLimits
 
 from .planner_tools import ONESHOT_PLANNER_TOOLS
 from common import WorkflowState, _model_override
@@ -58,8 +59,15 @@ async def plan_workflow_one_shot(
         run_kwargs = {}
         if model_override is not None:
             run_kwargs["model"] = model_override
+        # Default request_limit=50 is too low for this planner's tool-calling
+        # loop (delegating to category subagents plus self-check tools) with
+        # some models; raise it so those models aren't cut off mid-plan.
         result = await oneshot_planner.run(
-            user_goal, deps=state, output_type=Workflow, **run_kwargs
+            user_goal,
+            deps=state,
+            output_type=Workflow,
+            usage_limits=UsageLimits(request_limit=200),
+            **run_kwargs,
         )
     finally:
         _model_override.reset(token)
