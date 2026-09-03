@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
-from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.retries import RetryConfig
 from pydantic_evals.reporting import EvaluationReportAdapter
 from tenacity import retry_if_exception, stop_after_attempt, wait_exponential
@@ -36,12 +36,16 @@ from benchmark.datasets import make_dataset, run_planned_case
 # Depot gateway, especially for Gemini), read/connect timeouts on the raw
 # HTTP transport (httpx.TimeoutException, seen surfacing as an unwrapped
 # httpx.ReadTimeout from google-genai's own client, not a pydantic-ai
-# exception), and outright connection failures (httpx.ConnectError, seen
-# live as "Temporary failure in name resolution" -- a transient local/network
-# DNS blip, not anything wrong with the request itself) are transient infra
-# flakiness, not a model- or code-quality signal -- retry the whole
-# plan+execute case a few times with backoff rather than letting one bad
-# gateway response or network hiccup sink an otherwise-valid case.
+# exception), outright connection failures (httpx.ConnectError, seen live as
+# "Temporary failure in name resolution" -- a transient local/network DNS
+# blip, not anything wrong with the request itself), and bare ModelAPIError
+# (pydantic-ai's Anthropic provider raises this, not ModelHTTPError, for
+# anthropic.APIConnectionError -- seen live as "Request timed out or
+# interrupted... network timeout, dropped connection, or request
+# cancellation") are transient infra flakiness, not a model- or
+# code-quality signal -- retry the whole plan+execute case a few times
+# with backoff rather than letting one bad gateway response or network
+# hiccup sink an otherwise-valid case.
 #
 # UsageLimitExceeded (the planner's tool-calling loop needing more requests
 # than oneshot_planner.py's configured limit) is included here too: unlike a
@@ -59,6 +63,13 @@ _TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 def _is_transient_failure(exc: BaseException) -> bool:
     if isinstance(exc, ModelHTTPError):
         return exc.status_code in _TRANSIENT_STATUS_CODES
+    if isinstance(exc, ModelAPIError):
+        # ModelHTTPError is a subclass of ModelAPIError, already handled
+        # above with a status-code check; a bare (non-HTTP) ModelAPIError
+        # is always a connection-level failure (see anthropic.py's
+        # _map_api_errors: raised only for APIConnectionError, never for a
+        # successful-but-erroring HTTP response), so it's always transient.
+        return True
     if isinstance(exc, UsageLimitExceeded):
         return True
     return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
