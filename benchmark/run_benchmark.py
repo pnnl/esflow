@@ -33,13 +33,15 @@ from benchmark.common import PILOT_MODELS, RESULTS_DIR, TASKS
 from benchmark.datasets import make_dataset, run_planned_case
 
 # Gateway 5xx (seen in practice as sporadic 504 Gateway Time-out from the PNNL
-# Depot gateway, especially for Gemini) and read/connect timeouts on the raw
+# Depot gateway, especially for Gemini), read/connect timeouts on the raw
 # HTTP transport (httpx.TimeoutException, seen surfacing as an unwrapped
 # httpx.ReadTimeout from google-genai's own client, not a pydantic-ai
-# exception) are transient infra flakiness, not a model- or code-quality
-# signal -- retry the whole plan+execute case a few times with backoff
-# rather than letting one bad gateway response or slow connection sink an
-# otherwise-valid case.
+# exception), and outright connection failures (httpx.ConnectError, seen
+# live as "Temporary failure in name resolution" -- a transient local/network
+# DNS blip, not anything wrong with the request itself) are transient infra
+# flakiness, not a model- or code-quality signal -- retry the whole
+# plan+execute case a few times with backoff rather than letting one bad
+# gateway response or network hiccup sink an otherwise-valid case.
 #
 # UsageLimitExceeded (the planner's tool-calling loop needing more requests
 # than oneshot_planner.py's configured limit) is included here too: unlike a
@@ -59,7 +61,7 @@ def _is_transient_failure(exc: BaseException) -> bool:
         return exc.status_code in _TRANSIENT_STATUS_CODES
     if isinstance(exc, UsageLimitExceeded):
         return True
-    return isinstance(exc, httpx.TimeoutException)
+    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
 
 
 RETRY_TRANSIENT_FAILURES: RetryConfig = {
