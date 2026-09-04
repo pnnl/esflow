@@ -42,6 +42,7 @@ steps:
       variable: RIVER_DISCHARGE_OVER_LAND_LIQ
       locations_file: "${match_gauges.outputs.matched_file}"
       years: "${settings.years}"
+      frequency: daily
     outputs:
       timeseries_file: sim_discharge.csv
 

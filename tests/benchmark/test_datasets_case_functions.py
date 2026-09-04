@@ -113,3 +113,61 @@ async def test_run_case_still_raises_on_unexpected_exception(monkeypatch, mode, 
     label = f"{MODEL_NAME}/{TASK}/run3"
     with pytest.raises(ConnectionError, match="simulated network failure"):
         await run_case(label)
+
+
+# ---------------------------------------------------------------------------
+# make_dataset_from_cases() -- builds a Dataset from explicit case names
+# instead of the full models x tasks x runs cross product, so a chunk's
+# report.failures can be retried by name alone (see
+# benchmark/RUNBOOK.md "Retrying a partial chunk failure").
+# ---------------------------------------------------------------------------
+def test_make_dataset_from_cases_builds_exactly_the_requested_cases():
+    names = [
+        "GPT 5.4/task_01_obs_summary/run2",
+        "Claude Opus 4.8/task_05_basin_streamflow/run1",
+    ]
+    dataset = datasets.make_dataset_from_cases("protocol", names)
+
+    assert [c.name for c in dataset.cases] == names
+    assert [c.inputs for c in dataset.cases] == names
+
+
+def test_make_dataset_from_cases_preserves_order():
+    names = [
+        "Claude Opus 4.8/task_02_seasonal_runoff/run3",
+        "GPT 5.4/task_01_obs_summary/run1",
+    ]
+    dataset = datasets.make_dataset_from_cases("single_agent", names)
+
+    assert [c.name for c in dataset.cases] == names
+
+
+def test_make_dataset_from_cases_rejects_duplicate_case_name():
+    """Dataset itself rejects duplicate case names (pydantic_evals.Dataset's
+    own constructor check) -- make_dataset_from_cases doesn't need its own
+    dedup logic, but a caller passing the same case twice should still get a
+    clear error rather than a silently-dropped duplicate."""
+    names = [
+        "GPT 5.4/task_01_obs_summary/run1",
+        "GPT 5.4/task_01_obs_summary/run1",
+    ]
+    with pytest.raises(ValueError, match="Duplicate case name"):
+        datasets.make_dataset_from_cases("single_agent", names)
+
+
+def test_make_dataset_from_cases_uses_the_evaluator_for_the_cases_task():
+    from benchmark.grading import StructuralGrade
+
+    names = ["GPT 5.4/task_03_et_benchmark/run4"]
+    dataset = datasets.make_dataset_from_cases("protocol", names)
+
+    [case] = dataset.cases
+    [evaluator] = case.evaluators
+    assert isinstance(evaluator, StructuralGrade)
+    assert evaluator.task == "task_03_et_benchmark"
+    assert evaluator.mode == "protocol"
+
+
+def test_make_dataset_from_cases_rejects_malformed_case_name():
+    with pytest.raises(ValueError):
+        datasets.make_dataset_from_cases("protocol", ["not-a-valid-case-name"])

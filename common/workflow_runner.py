@@ -302,6 +302,7 @@ def run_workflow_definition(
                     declared_file = actual_file.parent / declared_filename
 
                     if actual_file.exists() and actual_file != declared_file:
+                        declared_file.parent.mkdir(parents=True, exist_ok=True)
                         actual_file.rename(declared_file)
                         outputs[yaml_key] = str(declared_file)
                     else:

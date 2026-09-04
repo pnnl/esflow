@@ -87,6 +87,9 @@ MODELS: dict[str, Model] = {
     "GPT o4 Mini": incubator_openai_model("o4-mini-project"),
     "Gemma 4 26B": incubator_google_model("gemma-4-26b-a4b-project"),
     "Gemini 3.5 Flash": incubator_google_model("gemini-3.5-flash-project"),
+    "Claude Sonnet 5": incubator_anthropic_model("claude-sonnet-5-project"),
+    "GPT 5.6 Terra": incubator_openai_model("gpt-5.6-terra-project"),
+    "Gemini 3.7 Flash": incubator_google_model("gemini-3.7-flash-project"),
 }
 
 # Default model used by the planner and every subagent.

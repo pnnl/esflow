@@ -24,6 +24,7 @@ import traceback
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_evals import Case, Dataset
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
@@ -81,14 +82,18 @@ async def run_planned_case(
 ) -> Path:
     """Plan (via the mode's planner), validate, and execute a run.
 
-    Returns the output dir. Catalog validation failures and runner
-    rejections are *expected* LLM output-quality failure modes -- not
-    exceptional -- so this returns out_dir normally for them (with the
-    reason written to .error.txt) and lets StructuralGrade's
-    has_deliverable() check grade the run crash, since no deliverable was
-    ever produced. This keeps every run in report.cases, where
-    make_manual_queue.py/merge_grades.py/self_debug_crashes.py look,
-    instead of report.failures, which they don't.
+    Returns the output dir. Catalog validation failures, runner rejections,
+    and the planner exhausting its structured-output validation retries
+    (UnexpectedModelBehavior -- the model returned output that didn't match
+    a subagent's typed Step schema, e.g. an invalid tool name, and didn't
+    correct it within the retry budget) are all *expected* LLM
+    output-quality failure modes -- not exceptional -- so this returns
+    out_dir normally for them (with the reason written to .error.txt) and
+    lets StructuralGrade's has_deliverable() check grade the run as a
+    crash, since no deliverable was ever produced. This keeps every run in
+    report.cases, where make_manual_queue.py/merge_grades.py/
+    self_debug_crashes.py look, instead of report.failures, which they
+    don't.
 
     Only genuinely unexpected exceptions (e.g. an Agent.run() call failing
     due to a network/API error, or a bug in the harness itself) still
@@ -108,6 +113,13 @@ async def run_planned_case(
 
     try:
         workflow = await planner(prompt, settings, MODELS[model_name])
+    except UnexpectedModelBehavior as exc:
+        artifact.with_suffix(".error.txt").write_text(
+            f"planner failed to produce valid structured output: {exc}", encoding="utf-8"
+        )
+        return out_dir
+
+    try:
         workflow.write_to_file(artifact)
         errors = validate_workflow(workflow.to_yaml_dict())
         if errors:
@@ -152,4 +164,27 @@ def make_dataset(mode: str, models: list[str], tasks: list[str], runs: int) -> D
                     inputs=name,
                     evaluators=[StructuralGrade(mode=mode, task=task, reference_dir=REFERENCE_DIR)],
                 ))
+    return Dataset(name=f"{mode}_benchmark", cases=cases)
+
+
+def make_dataset_from_cases(mode: str, case_names: list[str]) -> Dataset[str, Path]:
+    """Build a Dataset containing exactly the given (model, task, run) cases.
+
+    Used by run_benchmark.py's --cases flag to retry a small, explicit set of
+    cases (e.g. the ones that landed in a prior chunk's report.failures after
+    exhausting RETRY_TRANSIENT_FAILURES) instead of rebuilding the full
+    models x tasks x runs cross product via make_dataset() -- retrying a
+    handful of named cases takes seconds instead of redoing an entire
+    already-mostly-successful chunk. parse_case_name() validates each name
+    eagerly (raises ValueError on a malformed "model/task/run" string) so a
+    typo fails fast instead of silently building zero/wrong cases.
+    """
+    cases: list[Case[str, Path, None]] = []
+    for name in case_names:
+        _model, task, _run = parse_case_name(name)
+        cases.append(Case(
+            name=name,
+            inputs=name,
+            evaluators=[StructuralGrade(mode=mode, task=task, reference_dir=REFERENCE_DIR)],
+        ))
     return Dataset(name=f"{mode}_benchmark", cases=cases)
