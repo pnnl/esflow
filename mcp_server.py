@@ -11,6 +11,8 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from agents.planner.oneshot_planner import plan_workflow_one_shot
 from agents.planner.oneshot_planner_executor import (
@@ -42,6 +44,12 @@ mcp = FastMCP(
         "to validate_workflow or execute_workflow."
     ),
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> JSONResponse:
+    """Liveness probe for HTTP transport; not part of the MCP protocol itself."""
+    return JSONResponse({"status": "ok"})
 
 
 class WorkflowExecutionResult(BaseModel):

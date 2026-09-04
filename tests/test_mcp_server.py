@@ -4,6 +4,7 @@ import pandas as pd
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 import pytest
+from starlette.testclient import TestClient
 
 import mcp_server
 from common.workflow import DiagnosticsAndSkillMetricsStep, Settings, Workflow
@@ -30,6 +31,16 @@ def _stats_workflow(tmp_path: Path) -> Workflow:
             )
         ],
     )
+
+
+def test_health_check_route_returns_ok():
+    app = mcp_server.mcp.http_app()
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 async def test_validate_workflow_over_mcp(tmp_path):
