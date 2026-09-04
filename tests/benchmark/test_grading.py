@@ -91,6 +91,36 @@ def test_has_deliverable_rejects_unknown_kind(tmp_path, monkeypatch):
         has_deliverable(tmp_path, "unknown")
 
 
+def test_has_deliverable_rejects_csv_not_matching_key_pattern(tmp_path):
+    """Regression test: has_deliverable() previously accepted *any*
+    non-trivial CSV for task_01, so an unrelated earlier step's output
+    (e.g. gauge_metadata.csv) could satisfy Step 1's crash check even when
+    the step that actually produces the summary-stats deliverable crashed
+    -- silently downgrading a real crash to "undetermined" (confirmed live:
+    4 Gemini/task_01 runs that failed on a missing/invalid required "years"
+    param). A CSV that doesn't match KEY_CSV_PATTERNS["task_01_obs_summary"]
+    (["summary", "stats"]) must not satisfy the deliverable check."""
+    out_dir = tmp_path / "run_output"
+    out_dir.mkdir()
+    unrelated_csv = out_dir / "gauge_metadata.csv"
+    unrelated_csv.write_text("gauge_id,lat,lon\n" + "1,2,3\n" * MIN_CSV_BYTES)
+
+    assert has_deliverable(out_dir, "task_01_obs_summary") == (
+        False, "no non-trivial CSV deliverable"
+    )
+
+
+def test_has_deliverable_accepts_csv_matching_key_pattern(tmp_path):
+    out_dir = tmp_path / "run_output"
+    out_dir.mkdir()
+    (out_dir / "gauge_metadata.csv").write_text("gauge_id\n" + "1\n" * MIN_CSV_BYTES)
+    (out_dir / "summary_stats.csv").write_text("value\n" + "1\n" * MIN_CSV_BYTES)
+
+    assert has_deliverable(out_dir, "task_01_obs_summary") == (
+        True, "csv deliverable: summary_stats.csv"
+    )
+
+
 # ---------------------------------------------------------------------------
 # find_key_csv() / find_key_nc()
 # ---------------------------------------------------------------------------
@@ -102,6 +132,30 @@ def test_find_key_files_prefers_non_excluded_matches(tmp_path):
     assert find_key_nc(tmp_path, "task_02_seasonal_runoff").name == "runoff.nc"
     assert find_key_csv(tmp_path / "missing", "task_01_obs_summary") is None
     assert find_key_nc(tmp_path, "task_01_obs_summary") is None
+
+
+def test_find_key_files_search_nested_subdirectories(tmp_path):
+    """Regression test: find_key_csv()/find_key_nc() previously only
+    searched out_dir directly (glob, not rglob), so a run that wrote its
+    deliverable to a nested subdirectory instead of out_dir itself (e.g. a
+    run whose YAML's per-step "outputs:" paths inconsistently didn't all
+    resolve under settings.output_dir -- confirmed live: PNGs landed
+    directly in out_dir but CSVs landed in out_dir/output/<task>/) would
+    have its otherwise-valid numerical output silently missed by Step 2's
+    comparison ("key csv not found in run"), even though the file exists
+    just one level deeper."""
+    nested = tmp_path / "output" / "task05_basin_streamflow"
+    nested.mkdir(parents=True)
+    (nested / "discharge_validation_metrics.csv").touch()
+    (nested / "runoff_field.nc").touch()
+
+    found_csv = find_key_csv(tmp_path, "task_05_basin_streamflow")
+    assert found_csv is not None
+    assert found_csv.name == "discharge_validation_metrics.csv"
+
+    found_nc = find_key_nc(tmp_path, "task_02_seasonal_runoff")
+    assert found_nc is not None
+    assert found_nc.name == "runoff_field.nc"
 
 
 # ---------------------------------------------------------------------------

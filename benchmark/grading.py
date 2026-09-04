@@ -109,7 +109,18 @@ MIN_CSV_BYTES = 20
 # Step 1 helpers — final deliverable detection
 # ---------------------------------------------------------------------------
 def has_deliverable(out_dir: Path, task: str):
-    """Return (ok, reason). True iff the final deliverable exists."""
+    """Return (ok, reason). True iff the final deliverable exists.
+
+    For task_01 (the only "csv" deliverable task), the CSV must match
+    KEY_CSV_PATTERNS[task] (the same pattern find_key_csv() uses for Step
+    2), not just be *any* non-trivial CSV in out_dir -- an earlier step's
+    unrelated output (e.g. gauge_metadata.csv) could otherwise satisfy this
+    check even when the step that was actually supposed to produce the
+    summary-stats deliverable crashed, silently downgrading a real crash to
+    "undetermined" (confirmed live: 4 Gemini/task_01 runs that genuinely
+    failed on a missing/invalid required "years" param were misgraded this
+    way because has_deliverable() only checked for "any CSV").
+    """
     if not out_dir.is_dir():
         return False, "no run_output directory"
     files = [p for p in out_dir.iterdir() if p.is_file()]
@@ -120,6 +131,9 @@ def has_deliverable(out_dir: Path, task: str):
     if kind == "csv":
         csvs = [p for p in files if p.suffix.lower() == ".csv"
                 and p.stat().st_size >= MIN_CSV_BYTES]
+        patterns = KEY_CSV_PATTERNS.get(task, [])
+        if patterns:
+            csvs = [p for p in csvs if any(pat.lower() in p.name.lower() for pat in patterns)]
         if not csvs:
             return False, "no non-trivial CSV deliverable"
         return True, f"csv deliverable: {csvs[0].name}"
@@ -135,9 +149,22 @@ def has_deliverable(out_dir: Path, task: str):
 # Step 2 helpers — protocol-only numerical comparison
 # ---------------------------------------------------------------------------
 def find_key_csv(out_dir: Path, task: str):
+    """Find the key CSV for task anywhere under out_dir (recursive).
+
+    Searches recursively (rglob, not glob) so a run that wrote its
+    deliverable to a nested subdirectory instead of directly into out_dir
+    (confirmed live: a model wrote its output-path prefix inconsistently,
+    landing PNGs in out_dir but CSVs in out_dir/output/<task>/) is still
+    found and graded on its numerical content -- has_deliverable()'s Step 1
+    crash check independently still requires the same deliverable to exist
+    directly in out_dir, so a run that only writes to a nested path is
+    still caught as a crash there; this only affects whether Step 2's
+    comparison can find a CSV to grade once Step 1 has already passed via
+    some other file.
+    """
     if not out_dir.is_dir():
         return None
-    csvs = sorted(out_dir.glob("*.csv"))
+    csvs = sorted(out_dir.rglob("*.csv"))
     for pattern in KEY_CSV_PATTERNS[task]:
         matches = [f for f in csvs if pattern.lower() in f.name.lower()]
         if matches:
@@ -148,10 +175,14 @@ def find_key_csv(out_dir: Path, task: str):
 
 
 def find_key_nc(out_dir: Path, task: str):
+    """Find the key NetCDF file for task anywhere under out_dir (recursive).
+
+    See find_key_csv()'s docstring -- same rationale for using rglob.
+    """
     patterns = KEY_NC_PATTERNS.get(task, [])
     if not patterns or not out_dir.is_dir():
         return None
-    ncs = sorted(out_dir.glob("*.nc"))
+    ncs = sorted(out_dir.rglob("*.nc"))
     for pattern in patterns:
         matches = [f for f in ncs if pattern.lower() in f.name.lower()]
         if matches:
