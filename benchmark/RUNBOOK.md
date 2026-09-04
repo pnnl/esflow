@@ -13,10 +13,12 @@ interrupted -- a shell/session timeout, a lost connection, anything -- you
 get **no report at all** for any of it, even for cases that individually
 succeeded, because nothing is written until the whole dataset finishes.
 
-There is also no cheap way to resume in place: `run_planned_case()`
-(`benchmark/datasets.py`) always re-plans and re-executes a case from
-scratch; nothing here skips a case just because `run{N}.yaml` already
-exists on disk from a previous attempt.
+There is also no cheap way to resume a chunk *as a whole* in place:
+`run_planned_case()` (`benchmark/datasets.py`) always re-plans and
+re-executes a case from scratch; nothing here skips a case just because
+`run{N}.yaml` already exists on disk from a previous attempt. (Individual
+failed cases *can* be retried cheaply without redoing the rest of the
+chunk -- see "Retrying a partial chunk failure" under Phase 1.)
 
 Splitting the grid into one chunk per (model, mode) -- 6 chunks total --
 bounds the damage from any single interruption to one chunk (roughly
@@ -71,12 +73,15 @@ faster than `protocol`, which delegates through category subagents plus
 self-check tools).
 
 Transient gateway errors (sporadic 504s from the PNNL Depot gateway,
-especially with Gemini, and raw HTTP read timeouts) are retried
-automatically up to 4 attempts with backoff -- you do not need to
-manually retry a chunk for those. If a chunk fails with a *different*
-error, or is interrupted outright, just re-run that exact command; it
-will overwrite its own `--output` file from scratch (there is no partial
-resume within a chunk).
+especially with Gemini, raw HTTP read/connect timeouts, and mid-response
+disconnects) are retried automatically up to 4 attempts with backoff -- you
+do not need to manually retry a chunk for those. If a *few* cases still end
+up in the printed "Case Failures" table / the written report's `failures`
+after exhausting those 4 attempts (or a chunk is interrupted outright after
+some cases already succeeded), see "Retrying a partial chunk failure"
+below instead of re-running the whole chunk from scratch -- re-running a
+28-case chunk to fix 1-4 failures redoes every already-successful case's
+live LLM planning and execution too, which is the expensive part.
 
 ```bash
 # --- protocol mode ---
@@ -122,6 +127,63 @@ framework code; that's the actual signal this benchmark is measuring. If
 you see a *new* kind of failure not resembling "wrong/missing/hallucinated
 parameter or reference," treat it as worth investigating rather than
 assuming it's just model-quality noise.
+
+### Retrying a partial chunk failure
+
+A case lands in the written report's `failures` list (not `cases`) only
+when it exhausted all 4 of its automatic per-case retry attempts -- see
+`_is_transient_failure()` in `run_benchmark.py` for exactly which
+exceptions qualify (gateway 5xx, read/connect timeouts, mid-response
+disconnects, bare `ModelAPIError`, `UsageLimitExceeded`). These are
+infra/gateway flakiness, not model-quality signal, so retrying just those
+specific cases is safe and cheap -- unlike a `crash` grade (`StructuralGrade:
+0.000` in `cases`, not `failures`), which is real signal and should never
+be "fixed" by re-running.
+
+1. Find the exact failed case name(s) from the chunk's own report file
+   (the printed "Case Failures" table shows a truncated Case ID; the JSON
+   has the full name):
+
+   ```bash
+   .venv/bin/python -c "
+   import json
+   d = json.load(open('benchmark/results/single_agent_report_gemini_3_7_flash.json'))
+   for f in d['failures']:
+       print(f['name'])
+   "
+   ```
+
+2. Re-run *only* those cases with `--cases` (exact `model/task/run` names;
+   cannot be combined with `--models`/`--tasks`/`--runs`), writing to a
+   separate small patch file:
+
+   ```bash
+   .venv/bin/python -u benchmark/run_benchmark.py --mode single_agent \
+     --cases "Gemini 3.7 Flash/task_06_water_balance/run1" \
+     --output /tmp/patch_gemini_single_agent.json
+   ```
+
+   This takes seconds to minutes (one case's planning + execution) instead
+   of redoing an entire 30-110 minute chunk.
+
+3. Splice the patch back into the original chunk report in place --
+   `merge_reports.py` dedupes by case name with **last-report-wins**
+   semantics, so list the original chunk file first and the patch last:
+
+   ```bash
+   .venv/bin/python -u benchmark/merge_reports.py --mode single_agent \
+     --reports benchmark/results/single_agent_report_gemini_3_7_flash.json \
+               /tmp/patch_gemini_single_agent.json \
+     --output benchmark/results/single_agent_report_gemini_3_7_flash.json
+   ```
+
+   If the patched case still lands in `failures`, repeat steps 1-3 for it.
+
+This per-case retry loop is the preferred path for a small number of
+failures. If *many* cases in a chunk failed at once (e.g. a sustained
+multi-minute gateway outage affecting most of the chunk), retrying them
+one-by-one has diminishing returns -- just re-run the whole chunk command
+instead; it overwrites its own `--output` file from scratch.
 
 ## Phase 2: merge each mode's chunks into one report
 

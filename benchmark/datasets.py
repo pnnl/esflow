@@ -165,3 +165,26 @@ def make_dataset(mode: str, models: list[str], tasks: list[str], runs: int) -> D
                     evaluators=[StructuralGrade(mode=mode, task=task, reference_dir=REFERENCE_DIR)],
                 ))
     return Dataset(name=f"{mode}_benchmark", cases=cases)
+
+
+def make_dataset_from_cases(mode: str, case_names: list[str]) -> Dataset[str, Path]:
+    """Build a Dataset containing exactly the given (model, task, run) cases.
+
+    Used by run_benchmark.py's --cases flag to retry a small, explicit set of
+    cases (e.g. the ones that landed in a prior chunk's report.failures after
+    exhausting RETRY_TRANSIENT_FAILURES) instead of rebuilding the full
+    models x tasks x runs cross product via make_dataset() -- retrying a
+    handful of named cases takes seconds instead of redoing an entire
+    already-mostly-successful chunk. parse_case_name() validates each name
+    eagerly (raises ValueError on a malformed "model/task/run" string) so a
+    typo fails fast instead of silently building zero/wrong cases.
+    """
+    cases: list[Case[str, Path, None]] = []
+    for name in case_names:
+        _model, task, _run = parse_case_name(name)
+        cases.append(Case(
+            name=name,
+            inputs=name,
+            evaluators=[StructuralGrade(mode=mode, task=task, reference_dir=REFERENCE_DIR)],
+        ))
+    return Dataset(name=f"{mode}_benchmark", cases=cases)
