@@ -30,7 +30,17 @@ PLANNER_ROUTING_PROMPT = (
     "emitting null/placeholder params. If either tool returns issues, ask the user for the missing "
     "information or corrections in plain text "
     "instead of returning an invalid workflow. "
-    "If no new steps are needed, return the workflow unchanged."
+    "If no new steps are needed, return the workflow unchanged.\n"
+    "If the requested analysis is not covered by any tool in the catalog, say so in plain text rather "
+    "than forcing an unsuitable tool into the plan. When the user has their own Python function for it, "
+    "call explain_onboarding (show_onboarding_example if they ask what format their code needs or where "
+    "to put it, and preview_user_code_as_tool once they give a file path) to show how it "
+    "would become a permanent tool. Those three only read files. When the user wants to actually "
+    "register it, call delegate_to_onboarding: an onboarding specialist handles that turn in this same "
+    "session and performs the writes after the user approves. Relay its reply verbatim enough to keep the "
+    "conversation coherent, and route the user's follow-ups back through delegate_to_onboarding. "
+    "A newly registered tool is not in this process's catalog yet, so never put it in the workflow you "
+    "return; tell the user to restart the app first."
 )
 
 

@@ -28,6 +28,10 @@ class WebAgentMode(str, Enum):
 
     PLANNER = "planner"
     PLANNER_EXECUTOR = "planner_executor"
+    #: Onboarding mode: instead of planning workflows, the chat agent helps the
+    #: user turn their own Python code into new capabilities/subagents. See
+    #: agents/onboarding/ and onboarding/.
+    ONBOARDING = "onboarding"
 
 
 class RuntimeConfig(BaseSettings):

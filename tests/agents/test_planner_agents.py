@@ -1,3 +1,4 @@
+import pytest
 from pydantic_ai.agent import AgentRunResult
 from pydantic_ai.models.test import TestModel
 
@@ -6,6 +7,45 @@ from agents.planner.multistep_planner_executor import plan_with_multistep_planne
 from agents.planner.oneshot_planner import oneshot_planner, plan_workflow_one_shot
 from agents.planner.oneshot_planner_executor import plan_with_planner
 from common.workflow import Settings, Workflow
+
+
+@pytest.fixture
+def no_onboarding_writes(monkeypatch, tmp_path):
+    """Redirect onboarding's writes into ``tmp_path`` for planner smoke tests.
+
+    ``TestModel`` calls every tool the agent exposes with synthesized arguments.
+    The interactive planner exposes ``delegate_to_onboarding``, which runs the
+    onboarding agent with the *caller's* model — so TestModel drives the
+    onboarding agent's write tools too and happily executes
+    ``create_subagent(name='a')`` against the real ``extensions/registry.yaml``.
+    That is how a junk ``AStep`` category and a ``call_a`` tool once got
+    committed and shipped.
+
+    Redirecting the paths is better than stubbing the write functions: the tools
+    still succeed, so the planner's tool loop is exercised exactly as in
+    production, and *any* write path — present or added later — is contained
+    rather than only the three functions we thought to name. Both the defining
+    module and the ``from ... import`` copy are patched, since rebinding only
+    ``common.tool_categories.REGISTRY_PATH`` would leave the name
+    ``onboarding.registry`` already resolved at import time pointing at the real
+    file.
+    """
+    import common.tool_categories as tool_categories
+    import onboarding.registry as registry
+
+    sandbox_registry = tmp_path / "registry.yaml"
+    sandbox_catalog = tmp_path / "tool_catalog.yaml"
+
+    monkeypatch.setattr(tool_categories, "REGISTRY_PATH", sandbox_registry)
+    monkeypatch.setattr(registry, "REGISTRY_PATH", sandbox_registry)
+    monkeypatch.setattr(registry, "CATALOG_PATH", sandbox_catalog)
+    import onboarding.scaffold as scaffold
+    monkeypatch.setattr(scaffold, "TOOLS_ROOT", tmp_path / "tools")
+    # Regenerating the catalog shells out and rewrites the real file; the
+    # planner smoke tests do not care whether the catalog was rebuilt.
+    monkeypatch.setattr(registry, "regenerate_catalog", lambda *a, **k: "skipped")
+
+    return sandbox_registry
 
 
 def _fake_workflow(**overrides) -> Workflow:
@@ -44,7 +84,7 @@ async def test_plan_workflow_one_shot_preserves_caller_settings_over_model_outpu
     assert workflow.settings == settings
 
 
-async def test_multistep_planner_runs_with_test_model(run_context):
+async def test_multistep_planner_runs_with_test_model(run_context, no_onboarding_writes):
     with planner.override(model=TestModel()):
         result = await planner.run("Help me plan", deps=run_context.deps)
 
@@ -80,7 +120,9 @@ async def test_plan_with_planner_preserves_session_settings_over_model_output(mo
     assert run_context.deps.workflow.settings == original_settings
 
 
-async def test_multistep_executor_planning_wrapper_returns_agent_response(run_context):
+async def test_multistep_executor_planning_wrapper_returns_agent_response(
+    run_context, no_onboarding_writes
+):
     with planner.override(model=TestModel()):
         message = await plan_with_multistep_planner(run_context, "Help me plan")
 

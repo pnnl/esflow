@@ -282,6 +282,36 @@ tools:
       description: 'CSV with columns: region, mean, area_weighted_mean'
   category: analyzers
   path: analyzers/compute_zonal_stats.py
+- name: compute_standardized_anomaly_index
+  description: Compute a standardized anomaly (SPI-like) drought index for a timeseries.
+  inputs:
+    input_file:
+      type: path
+      required: true
+      description: CSV timeseries with a time column and at least one numeric column.
+    value_column:
+      type: str
+      required: false
+      description: Column to analyze. Defaults to the first numeric column.
+    accumulation_months:
+      type: int
+      required: false
+      description: Rolling accumulation window in months.
+      default: 3
+    drought_threshold:
+      type: float
+      required: false
+      description: Index value below which a month counts as drought.
+      default: -1.0
+  outputs:
+    index_file:
+      type: csv
+    n_drought_months:
+      type: int
+    min_index:
+      type: float
+  category: analyzers
+  path: analyzers/compute_standardized_anomaly_index.py
 - name: compute_summary_stats
   description: 'Compute summary statistics (mean, std, min, max) for each column in
     a time series CSV. Optionally rank and filter to top N entries by a statistic.
@@ -317,6 +347,39 @@ tools:
       description: Number of columns analyzed
   category: analyzers
   path: analyzers/compute_summary_stats.py
+- name: compute_flow_exceedance_thresholds
+  description: Compute high- and low-flow exceedance thresholds from a streamflow
+    CSV.
+  inputs:
+    input_file:
+      type: path
+      required: true
+      description: CSV timeseries with a time column and a streamflow column.
+    flow_column:
+      type: str
+      required: false
+      description: Streamflow column name. Defaults to the first numeric column.
+    low_flow_percentile:
+      type: float
+      required: false
+      description: Exceedance percentile defining low flow (0-100).
+      default: 95.0
+    high_flow_percentile:
+      type: float
+      required: false
+      description: Exceedance percentile defining high flow (0-100).
+      default: 5.0
+  outputs:
+    exceedance_file:
+      type: csv
+    high_flow_threshold:
+      type: float
+    low_flow_threshold:
+      type: float
+    flashiness_ratio:
+      type: float
+  category: analyzers
+  path: analyzers/compute_flow_exceedance_thresholds.py
 - name: compute_basin_budget
   description: Combine basin-averaged model/obs fields and streamflow FDC metrics
     into a per-basin water budget summary table with relative biases for ET, runoff,
@@ -406,6 +469,64 @@ tools:
         per gauge)
   category: analyzers
   path: analyzers/compute_fdc_metrics.py
+- name: compute_snow_season_metrics
+  description: Summarize snow season timing and magnitude per water year.
+  inputs:
+    input_file:
+      type: path
+      required: true
+      description: CSV timeseries containing a time column and an SWE column.
+    swe_column:
+      type: str
+      required: false
+      description: SWE column name. Defaults to a column containing 'swe'.
+    swe_threshold:
+      type: float
+      required: false
+      description: SWE value (same units as input) defining snow presence.
+      default: 0.005
+    water_year_start_month:
+      type: int
+      required: false
+      description: Month that starts the water year (1-12).
+      default: 10
+  outputs:
+    metrics_file:
+      type: csv
+    n_water_years:
+      type: int
+    mean_snow_duration_days:
+      type: float
+  category: analyzers
+  path: analyzers/compute_snow_season_metrics.py
+- name: compute_gridded_trend
+  description: Fit a per-gridcell least-squares linear trend to a gridded field.
+  inputs:
+    input_file:
+      type: path
+      required: true
+      description: NetCDF file containing a time-varying gridded variable.
+    variable:
+      type: str
+      required: false
+      description: Variable to analyze. Defaults to the first 3-D time variable.
+    per_decade:
+      type: bool
+      required: false
+      description: Report the slope per decade instead of per year.
+      default: true
+    min_valid_fraction:
+      type: float
+      required: false
+      description: Minimum fraction of finite timesteps required per cell.
+      default: 0.6
+  outputs:
+    output_file:
+      type: netcdf
+      description: An xarray Dataset with ``trend``, ``intercept``, ``valid_fraction``
+        and ``time_mean`` variables.
+  category: analyzers
+  path: analyzers/compute_gridded_trend.py
 - name: plot_water_balance_basins
   description: 'Plot a composite water balance figure: global residual map with basin
     outlines (top) and per-basin bar charts of P, ET, Q, and residual (bottom panels).'
@@ -467,6 +588,39 @@ tools:
       description: Scatter plot PNG
   category: plotters
   path: plotters/plot_scatter.py
+- name: plot_month_year_heatmap
+  description: Render a year (rows) by month (columns) heatmap of a timeseries.
+  inputs:
+    input_file:
+      type: path
+      required: true
+      description: CSV timeseries with a time column and a numeric value column.
+    value_column:
+      type: str
+      required: false
+      description: Column to plot. Defaults to the first numeric column.
+    title:
+      type: str
+      required: false
+      description: Figure title.
+      default: Month-by-year heatmap
+    colormap:
+      type: str
+      required: false
+      description: Matplotlib colormap name.
+      default: viridis
+    aggregation:
+      type: str
+      required: false
+      description: How to aggregate multiple values per month ('mean', 'sum', 'max',
+        'min').
+      default: mean
+  outputs:
+    plot_file:
+      type: png
+      description: A matplotlib Figure containing the heatmap.
+  category: plotters
+  path: plotters/plot_month_year_heatmap.py
 - name: plot_gridded_map
   description: 'Plot a 2D gridded field on a geographic map with coastlines. Input
     is a lat-lon NetCDF file (from extract_gridded_field or compute_spatial_bias).

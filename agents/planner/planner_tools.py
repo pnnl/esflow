@@ -6,6 +6,9 @@ from pydantic_ai import RunContext
 
 from agents.domain import data_discovery, diagnostics, extraction, visualization
 from agents.domain import water_cycle
+from agents.domain.extensions import EXTENSION_PLANNER_TOOLS
+from agents.planner.onboarding_advisor import ONBOARDING_ADVISOR_TOOLS
+from agents.planner.onboarding_bridge import ONBOARDING_BRIDGE_TOOLS
 from common import WorkflowState
 from common.workflow_validation import (
     check_completeness as _check_completeness,
@@ -78,6 +81,9 @@ ONESHOT_PLANNER_TOOLS = [
     diagnostics.call_diagnostics,
     water_cycle.call_water_cycle_synthesis,
     visualization.call_visualization,
+    # Subagents for user-onboarded categories, built at import time from
+    # extensions/registry.yaml. Empty unless the user created a new category.
+    *EXTENSION_PLANNER_TOOLS,
     check_completeness,
     run_workflow_validation,
 ]
@@ -86,4 +92,10 @@ ONESHOT_PLANNER_TOOLS = [
 PLANNER_TOOLS = [
     *ONESHOT_PLANNER_TOOLS,
     render_dag,
+    # Read-only onboarding advice, plus one tool that delegates a turn to the
+    # onboarding agent so a user can register code without leaving the chat.
+    # Interactive stacks only: ONESHOT_PLANNER_TOOLS is what the benchmark and
+    # MCP server run, and must stay unchanged and non-mutating.
+    *ONBOARDING_ADVISOR_TOOLS,
+    *ONBOARDING_BRIDGE_TOOLS,
 ]

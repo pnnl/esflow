@@ -4,6 +4,7 @@ from pathlib import Path
 
 from starlette.staticfiles import StaticFiles
 
+from agents.onboarding import OnboardingState, onboarding_agent
 from agents.planner.multistep_planner import planner
 from agents.planner.multistep_planner_executor import multistep_planner_executor
 from agents.planner.settings import default_settings
@@ -31,6 +32,14 @@ def _bootstrap_workflow_state() -> WorkflowState:
 def _build_web_app():
     """Build the configured chat app for the selected web agent mode."""
     web_agent_mode = runtime_config.WEB_AGENT_MODE
+    # Every mode but ONBOARDING plans workflows and therefore shares
+    # WorkflowState; the onboarding agent mutates capability drafts instead.
+    #
+    # The planner modes no longer *need* the ONBOARDING mode: they carry
+    # delegate_to_onboarding, which runs the onboarding agent in this same
+    # process on its own OnboardingState (see agents/planner/onboarding_bridge.py).
+    # ONBOARDING remains for a dedicated, planner-free onboarding session.
+    deps = _bootstrap_workflow_state()
 
     if web_agent_mode is WebAgentMode.PLANNER_EXECUTOR:
         web_agent = multistep_planner_executor
@@ -50,7 +59,14 @@ def _build_web_app():
             "If the execution result includes plot image Markdown, reproduce that Markdown verbatim in the "
             "Output section so the plot renders inline in the chat. Do not alter or drop the image URLs. "
             "In Next Action:, tell the user the next useful thing to do. "
-            "Do not stop at the raw tool result; convert it into a clear conversational response."
+            "Do not stop at the raw tool result; convert it into a clear conversational response. "
+            "If the user wants an analysis the tool library does not cover, or mentions their own Python "
+            "code for it, call explain_onboarding, show_onboarding_example if they ask what format their "
+            "code needs or where to put it, and preview_user_code_as_tool once they give you a "
+            "file path. Those three only read files. When they want to register it for good, call "
+            "delegate_to_onboarding and keep routing their onboarding replies through it — no mode "
+            "switch or restart is needed to onboard. Registration is permanent, but this process cannot "
+            "plan with the new tool until it restarts, so do not add it to the current workflow."
         )
     elif web_agent_mode is WebAgentMode.PLANNER:
         web_agent = planner
@@ -58,13 +74,33 @@ def _build_web_app():
             "You are chatting interactively. Greet the user briefly and explain you compose "
             "ESM analysis workflows from a validated tool library. "
             "After each change to the workflow, call render_dag and include its Mermaid diagram "
-            "in your reply so the user can see the current plan."
+            "in your reply so the user can see the current plan. "
+            "If the user wants an analysis the tool library does not cover, or mentions their own Python "
+            "code for it, call explain_onboarding, show_onboarding_example if they ask what format their "
+            "code needs or where to put it, and preview_user_code_as_tool once they give you a "
+            "file path. Those three only read files. When they want to register it for good, call "
+            "delegate_to_onboarding and keep routing their onboarding replies through it — no mode "
+            "switch or restart is needed to onboard. Registration is permanent, but this process cannot "
+            "plan with the new tool until it restarts, so do not add it to the current workflow."
+        )
+    elif web_agent_mode is WebAgentMode.ONBOARDING:
+        web_agent = onboarding_agent
+        deps = OnboardingState()
+        instructions = (
+            "You are chatting interactively in a dedicated onboarding session. Greet the user briefly "
+            "and explain that you turn their own Python analysis code into ESMFlow "
+            "capabilities the planner can use, and that you will never write anything "
+            "to the repository without their approval. "
+            "Ask for the path to the Python file they want to onboard, then call "
+            "scan_user_code. Walk them through the introspector's notes before "
+            "registering anything, and finish by showing the verification report and a "
+            "runnable workflow snippet."
         )
     else:
         raise ValueError(f"Unsupported WEB_AGENT_MODE: {web_agent_mode}")
 
     return web_agent.to_web(
-        deps=_bootstrap_workflow_state(),
+        deps=deps,
         models=MODELS,
         html_source=Path(__file__).parent / "web_ui.html",
         instructions=instructions,

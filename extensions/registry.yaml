@@ -1,0 +1,48 @@
+# ESMFlow extension registry
+#
+# Written by the onboarding agent (onboarding/registry.py).  Editing by hand is
+# fine, but after any change run:
+#
+#     python tools/generate_catalog.py --overwrite
+#
+# and restart the app: common.workflow_validation caches the catalog for the
+# lifetime of the process.
+
+version: 1
+capabilities:
+- tool_name: compute_standardized_anomaly_index
+  category: analyzers
+  subagent: diagnostics
+  source_module: examples.user_code.drought_indices
+  source_function: compute_standardized_anomaly_index
+  adapter_path: tools/analyzers/compute_standardized_anomaly_index.py
+  onboarded_at: '2026-09-10T15:56:32+00:00'
+- tool_name: compute_snow_season_metrics
+  category: analyzers
+  subagent: diagnostics
+  source_module: examples.user_code.snow_metrics
+  source_function: compute_snow_season_metrics
+  adapter_path: tools/analyzers/compute_snow_season_metrics.py
+  onboarded_at: '2026-09-10T15:56:35+00:00'
+- tool_name: compute_gridded_trend
+  category: analyzers
+  subagent: diagnostics
+  source_module: examples.user_code.grid_trends
+  source_function: compute_gridded_trend
+  adapter_path: tools/analyzers/compute_gridded_trend.py
+  onboarded_at: '2026-09-10T15:56:38+00:00'
+- tool_name: plot_month_year_heatmap
+  category: plotters
+  subagent: visualization
+  source_module: examples.user_code.heatmap
+  source_function: plot_month_year_heatmap
+  adapter_path: tools/plotters/plot_month_year_heatmap.py
+  onboarded_at: '2026-09-10T15:56:41+00:00'
+- tool_name: compute_flow_exceedance_thresholds
+  category: analyzers
+  subagent: diagnostics
+  source_module: examples.user_code.flow_exceedance
+  source_function: compute_flow_exceedance_thresholds
+  adapter_path: tools/analyzers/compute_flow_exceedance_thresholds.py
+  onboarded_at: '2026-09-10T17:40:05+00:00'
+subagents: []

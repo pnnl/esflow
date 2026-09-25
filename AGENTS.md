@@ -9,14 +9,18 @@ web app.
 - Python 3.10 venv already at `.venv` (repo uses `/usr/bin/python` 3.10, not the
   system default `python3` which may be newer — use `.venv/bin/python`).
 - Secrets/config live in `.env` (gitignored): `AI_INCUBATOR_KEY` (PNNL AI Incubator
-  "Depot" gateway key) and `WEB_AGENT_MODE` (`planner` or `planner_executor`).
+  "Depot" gateway key) and `WEB_AGENT_MODE` (`planner`, `planner_executor` or
+  `onboarding`).
 - `data/` and `/output` are gitignored and not present in a fresh clone. Sample
   E3SM/obs data (`./data/sample/e3sm`, `./data/sample/obs`) must exist locally
   before running workflows or evals — there is no fetch step for it.
 - Run the web app: `uvicorn app:app --env-file .env --host 127.0.0.1 --port 7932`.
 - `WEB_AGENT_MODE=planner` serves the interactive multistep planner (chat only,
   never executes); `planner_executor` also lets the agent run the workflow and
-  render plots inline.
+  render plots inline; `onboarding` serves the onboarding agent
+  (`agents/onboarding/onboarding_agent.py`) instead of a planner — it does not
+  plan or execute workflows, it registers the user's own Python as new tools
+  (see "Onboarding" below).
 
 ## Architecture (non-obvious wiring)
 
@@ -104,6 +108,166 @@ web app.
   `output/` relative to CWD (see `_plot_url` in `oneshot_planner_executor.py`) —
   writing outputs outside `Settings.output_dir`/`output/` breaks inline rendering.
 
+## Onboarding (adding user code as capabilities/agents)
+
+- **Adding a tool used to require three coupled edits**; the third is now
+  data-driven. (a) a module under `tools/<category>/` with `@esmflow_tool`,
+  (b) a regenerated `tools/tool_catalog.yaml`, and (c) the per-category
+  `Literal[...]` tool allow-list. (c) now lives in
+  `common/tool_categories.py::BUILTIN_CATEGORIES` (frozen `CategorySpec`s), and
+  `common/workflow.py::_build_step_class()` builds each `Step` subclass with
+  `pydantic.create_model` at import time. Don't hand-write new `Step` classes.
+- **`extensions/registry.yaml` is the user-extension half of that source of
+  truth.** `category_specs()` merges `BUILTIN_CATEGORIES` first, then registry
+  subagents — a registry entry can never shadow a builtin category. New
+  user-defined subagents become real planner categories (with a generated
+  `SnowHydrologyStep` / `call_snow_hydrology` pair via
+  `agents/domain/extensions.py`) purely from that YAML.
+- **The onboarding pipeline never imports the user's module to inspect it.**
+  `onboarding/introspect.py` is pure `ast`: it reads signatures, annotations,
+  defaults and docstrings to propose a `CapabilityDraft`
+  (`onboarding/models.py`). Only `onboarding/verify.py` and the generated
+  adapter actually import the code. This is deliberate — scanning must be safe
+  on code with import-time side effects.
+- **Generated adapters are the bridge, not rewrites of the user's code.**
+  `onboarding/scaffold.py` renders a thin `tools/<category>/<tool_name>.py`
+  carrying `GENERATED_MARKER`; it calls `tools/core/adapters.py`'s
+  `call_user_function()` + `materialize_result()`, which forward only the
+  declared inputs the user's signature actually accepts, then turn the return
+  value into files (DataFrame→csv, xarray→netcdf, Figure→png) plus scalars.
+  `remove_adapter()` refuses to delete a file lacking that marker, so
+  hand-written tools can't be clobbered by `onboarding remove`.
+- **Generated adapters must use the repo's `sys.path` import convention**
+  (`sys.path.insert(0, ...parent.parent)` then `from core.base import ...`), not
+  `from tools.core.base import ...`. `tools/generate_catalog.py` reads
+  `core.base.TOOL_REGISTRY`; importing via the `tools` package creates a
+  *second* module instance with its own registry, so the tool registers into a
+  dict the catalog generator never sees and silently vanishes from the catalog.
+  `tests/onboarding/test_scaffold.py` asserts `"from tools.core" not in source`.
+- **`ToolSpec.outputs` must use the dict form**
+  (`{'stats_file': {'type': 'csv', 'description': ...}}`). `esmflow_tool`'s
+  wrapper calls `out_spec.get('type', '')`, so a plain-string value crashes at
+  runtime; `adapters.output_type_of()` normalizes both shapes defensively.
+- **`register_capability()` is all-or-nothing.** It writes the adapter, records
+  the registry entry, then shells out to `generate_catalog.py`; if that
+  subprocess fails it restores the previous adapter source *and* registry text
+  before raising. Don't add a write between those steps without extending the
+  rollback.
+- CLI (all subcommands under `python -m onboarding.cli`, which needs
+  `AI_INCUBATOR_KEY` set like everything else since `common/config.py` validates
+  it at import time): `scan <source> [--function] [--show-adapter]`,
+  `register <source> [--function|--all] [--tool-name] [--subagent |
+  --new-subagent] [--overwrite] [--no-catalog] [--no-verify]`, `list`,
+  `verify [tool_name]`, `remove <tool_name> [--keep-adapter]`.
+- **A newly registered tool cannot be *planned with* until the process
+  restarts.** The catalog itself is cheap to reload (`load_raw_catalog()` is a
+  lazy singleton and `_catalog_singletons.clear()` resets it — `tests/conftest.py`
+  does exactly that per test). The real blocker is *import-time class
+  construction*: `common/workflow.py` runs `CATEGORY_SPECS = category_specs()`
+  and `STEP_CLASSES = {name: _build_step_class(spec) ...}` at module import,
+  each step class pins `tool: Literal[tuple(spec.tools)]`, and the planner's
+  `output_type=[Workflow, str]` schema is derived from those classes when the
+  `Agent` is constructed. Rebuilding a step class produces a *new* object that
+  already-imported consumers never see. A brand-new *category* is a harder stop
+  still: `agents/domain/extensions.py` builds `EXTENSION_AGENTS` /
+  `EXTENSION_PLANNER_TOOLS` at import, and tools cannot be added to an
+  already-constructed `Agent`. So: registration is permanent and immediately
+  visible on disk, but restart the web app / MCP server before putting the new
+  tool in a workflow.
+- `examples/user_code/` holds exemplar "user code" modules (drought indices,
+  snow metrics, gridded trends, a month×year heatmap, flow exceedance) that are
+  plain pandas/xarray/matplotlib functions with no ESMFlow imports. They are
+  already onboarded, so `tools/analyzers/compute_{standardized_anomaly_index,
+  snow_season_metrics,gridded_trend,flow_exceedance_thresholds}.py` and
+  `tools/plotters/plot_month_year_heatmap.py` are *generated* files — edit the
+  `examples/user_code/` source and re-register, don't patch the adapter.
+- **`examples/user_code/demo_growing_degree_days.py` is the one exemplar that
+  must stay *un*-onboarded.** It is the teaching material for the self-cleaning
+  demonstration (below), so its `# FORMAT:` comments and its explicit
+  `int()`/`str()`/`float()` coercions at the `return` boundary are load-bearing:
+  strip the casts and `onboarding/introspect.py` falls back to guessing, and the
+  demo starts teaching the wrong types.
+  `tests/onboarding/test_demo.py::test_the_exemplar_output_types_are_inferred_exactly`
+  pins them.
+- **The onboarding demonstration is register → run → offboard, and it must
+  leave nothing behind.** `onboarding/demo.py` is the engine:
+  `demo_status()` reads on-disk evidence only (registry entry, generated
+  adapter, catalog entry) and refuses to touch a same-named capability it did
+  not generate (`foreign_capability`); `start_demo()` registers the exemplar
+  with `overwrite=True` so any partial state self-repairs; `run_demo()`
+  synthesizes a deterministic 180-day temperature CSV and executes a real
+  one-step workflow **in a fresh subprocess** (the restart problem above means
+  this process can never see the tool it just registered — the subprocess *is*
+  the restart, same `@@JSON@@`-on-stdout trick as `onboarding/verify.py`);
+  `end_demo()` un-registers, deletes the adapter, regenerates the catalog and
+  then *re-checks*, reporting `leftovers` rather than a false success. The
+  exemplar source under `examples/user_code/` is never deleted.
+  - The agent-facing wrapper `demo_onboarding_walkthrough` calls `end_demo()` in
+    a `finally`, so a failed run still offboards; if cleanup itself fails it
+    returns a `WARNING` plus the `python -m onboarding.cli demo end` command.
+    Don't refactor that `try/finally` away.
+  - **The committed repo must always be demo-clean.** Four guard tests in
+    `tests/onboarding/test_demo.py` fail if `compute_growing_degree_days`
+    appears in `extensions/registry.yaml`, `tools/tool_catalog.yaml` or as a
+    generated adapter. If you ever interrupt a demo, run
+    `python -m onboarding.cli demo end` before committing.
+  - Headless: `python -m onboarding.cli demo {status,start,run,end,all}`.
+    `demo all` regenerates the real catalog, which is why the pytest suite stubs
+    the stages instead of running it.
+- **The planner has read-only onboarding advisor tools, by design.**
+  `agents/planner/onboarding_advisor.py` gives the interactive planner
+  `explain_onboarding`, `show_onboarding_example`, `preview_user_code_as_tool`
+  and `list_onboarded_capabilities` so a user who hits a capability gap mid-analysis
+  is told onboarding exists instead of getting an improvised answer. They are
+  typed `RunContext[WorkflowState]` (planner deps), so unlike the onboarding
+  agent's `scan_user_code` they *cannot* persist drafts — they are stateless
+  wrappers over `scan_source()` / `registry_summary()` / `demo_draft()`.
+  `show_onboarding_example` *shows* the exemplar and offers the live
+  demonstration via `delegate_to_onboarding`; it never runs it, because the demo
+  writes. All repo mutation stays
+  inside the onboarding *agent* (see the delegation bullet below);
+  `tests/agents/test_onboarding_advisor.py` patches `register_capability`,
+  `register_subagent`, `remove_capability`, `save_registry`,
+  `regenerate_catalog`, `write_adapter` and `remove_adapter` with fail-fast
+  stubs to keep it that way.
+- **The planner onboards *in session* by delegating, not by switching modes.**
+  `agents/planner/onboarding_bridge.py` exposes one tool,
+  `delegate_to_onboarding(ctx, request)`, which hands the turn to
+  `onboarding_agent.run(...)` with `model=ctx.model` and `usage=ctx.usage` so the
+  UI's model picker applies and delegated tokens count against the parent run's
+  limits. `WEB_AGENT_MODE=onboarding` was never a technical requirement — it is
+  just an `if/elif` in `app.py` — and now only exists for a dedicated,
+  planner-free onboarding session. Details that matter:
+  - The delegated agent needs `OnboardingState`, not `WorkflowState`, so the
+    bridge parks an `OnboardingSession` (state + `message_history`) on
+    `WorkflowState.onboarding`. That field is deliberately typed `Any`:
+    importing `agents.onboarding` from `common/__init__.py` would be circular.
+  - Continuity is manual. The bridge persists `result.all_messages()` back onto
+    the session, so drafts survive across planner turns; a naive one-shot `run`
+    would silently lose them. Route the user's onboarding follow-ups back
+    through the same tool.
+  - The write boundary is machine-checked, not commented:
+    `tests/agents/test_onboarding_bridge.py` AST-walks the bridge module and
+    fails if it ever imports one of the seven write functions.
+  - **Never run the onboarding agent under a plain `TestModel` in a test.**
+    `TestModel` calls *every* tool it is offered, which here includes
+    `register_draft` — it will write adapters into `tools/` from a unit test.
+    Use `TestModel(call_tools=[])`, or `FunctionModel` to script specific calls.
+- **Advisor and delegation tools attach to `PLANNER_TOOLS` and
+  `MULTISTEP_PLANNER_EXECUTOR_TOOLS` only, never `ONESHOT_PLANNER_TOOLS`** —
+  the latter is what `oneshot_planner.py` gives the benchmark and the MCP
+  server, and its tool set must stay fixed for scores to remain comparable —
+  and, for `delegate_to_onboarding`, must stay non-mutating. Tests assert the
+  advisor sets are disjoint and that `delegate_to_onboarding` is absent from
+  `ONESHOT_PLANNER_TOOLS`.
+- Only file-valued outputs (`csv`/`png`/`netcdf`) belong in a step's `outputs:`
+  mapping, and each must be a filename *with* an extension (the runner renames
+  the tool's artifact to it inside `Settings.output_dir`). Scalar outputs
+  (`int`/`float`/`str`/`dict`) are **not** listed there — they stay in
+  `context[step_id]['result']`. A later step consumes a file with
+  `${<step_id>.outputs.<output_key>}`; a bare `${<step_id>}` fails to resolve.
+  `render_workflow_snippet()` emits a correct example per capability.
+
 ## Conventions / gotchas
 
 - Never emit placeholder values (`UNKNOWN`, `<UNKNOWN>`, `TBD`, `N/A`, `""`) for
@@ -133,6 +297,11 @@ web app.
 ## Testing / evals
 
 - Run deterministic unit and tool tests with `.venv/bin/python -m pytest`.
+  `pytest-asyncio` (`requirements-test.txt`) is **required**, not optional —
+  `pytest.ini` sets `asyncio_mode = auto`, and without the plugin every `async def`
+  test fails with "async def functions are not natively supported" (32 of them)
+  alongside a misleading `PytestConfigWarning: Unknown config option: asyncio_mode`.
+  That is a missing-dependency symptom, not a regression.
   The suite lives under `tests/`, uses no live LLM calls, and requires
   `requirements-test.txt` in addition to application dependencies. Tests marked
   `sampledata` use the optional local `data/sample` dataset and reference outputs;
@@ -143,20 +312,39 @@ web app.
   through `benchmark/` (see below), which builds `pydantic_evals.Dataset`/
   `Case` objects graded by the shared `StructuralGrade` evaluator in
   `benchmark/grading.py`.
-- **4 known pre-existing failures in `tests/agents/test_planner_agents.py`**
-  (`test_oneshot_planner_returns_a_structured_workflow_with_test_model`,
-  `test_multistep_planner_runs_with_test_model`,
-  `test_oneshot_executor_planning_wrapper_updates_workflow_state`,
-  `test_multistep_executor_planning_wrapper_returns_agent_response`) make
-  real (failing) API calls despite using `Agent.override(model=TestModel())`
-  — the override doesn't take effect for `oneshot_planner`/`planner`'s
-  subagent-tool-calling path in this environment, so the request falls
-  through to the real configured model and gets a `ModelHTTPError`.
-  Confirmed present on `main`, reproduced identically before and after
-  unrelated changes — not a regression signal from your own edits. Other
-  tests in that same file avoid this by passing `model_override=TestModel()`
-  directly to the programmatic entrypoint (`plan_workflow_one_shot`) or by
-  monkeypatching `.run()` instead of using `.override()`.
+- Onboarding tests live under `tests/onboarding/` (`test_introspect.py`,
+  `test_scaffold.py`, `test_adapters.py`, `test_registry.py`, `test_demo.py`,
+  `test_committed_registry.py`) plus `tests/common/test_tool_categories.py`. They
+  are hermetic: every registry test passes an explicit `path=`/`tools_root=` under
+  `tmp_path` and `regenerate=False`, so they never touch the real
+  `extensions/registry.yaml` or `tools/` tree. Keep it that way — a test that
+  regenerates the catalog would rewrite a tracked file.
+- `tests/onboarding/test_committed_registry.py` pins the *committed* registry:
+  exactly five capabilities with their documented subagent routing, `subagents: []`,
+  and each adapter/source file present on disk and in the generated catalog. The
+  three guards in `test_demo.py` only check the demo tool name, which is why a
+  stray subagent once shipped through a fully green suite. Update
+  `EXPECTED_CAPABILITIES` deliberately when the shipped set changes.
+- **`TestModel` calls every tool an agent exposes, including delegation tools.**
+  The planner exposes `delegate_to_onboarding`, which runs the onboarding agent
+  with `model=ctx.model` (see `agents/planner/onboarding_bridge.py`). So
+  `planner.override(model=TestModel())` propagates `TestModel` into the onboarding
+  agent, which then calls onboarding's **write** tools with synthesized dummy
+  arguments — `create_subagent(name='a')` against the real
+  `extensions/registry.yaml`. This actually happened: it committed an `a` /
+  `AStep` / `call_a` subagent, i.e. a user-visible planner category, while the
+  suite stayed green. Any test that drives a planner with `TestModel` must use the
+  `no_onboarding_writes` fixture in `tests/agents/test_planner_agents.py`, which
+  redirects `REGISTRY_PATH`/`CATALOG_PATH` into `tmp_path` (patching **both**
+  `common.tool_categories` and the already-resolved copy in `onboarding.registry`,
+  because `from ... import` binds a separate reference) and stubs
+  `regenerate_catalog`. Redirecting beats raising: the tools still succeed, so the
+  planner loop is exercised as in production.
+- The backstop is the autouse `_protect_committed_repo_state` fixture in
+  `tests/conftest.py`: it snapshots `extensions/registry.yaml` and
+  `tools/tool_catalog.yaml`, then after each test both reverts and **fails** on any
+  change. If a test legitimately rewrites those files as the behaviour under test,
+  mark it `@pytest.mark.mutates_repo_state` and restore them itself.
 
 ## Benchmark
 

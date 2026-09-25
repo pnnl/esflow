@@ -1,8 +1,10 @@
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Type, Union
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
+
+from common.tool_categories import CategorySpec, category_specs
 
 
 class Settings(BaseModel):
@@ -22,63 +24,55 @@ class Step(BaseModel):
     outputs: Dict[str, str] = Field(default_factory=dict)
 
 
-class DataDiscoveryStep(Step):
-    """Step emitted by the ESM Data Discovery and Intake subagent."""
+def _build_step_class(spec: CategorySpec) -> Type[Step]:
+    """Create a ``Step`` subclass whose ``tool`` field is a Literal allow-list.
 
-    tool: Literal["fetch_ilamb_data", "load_obs_metadata"]
+    The allow-list comes from ``common.tool_categories`` (builtin lists merged
+    with ``extensions/registry.yaml``), so onboarding a tool into an existing
+    category requires no source edit here.
+    """
 
+    if not spec.tools:
+        # An empty Literal is invalid; a subagent with no tools yet keeps the
+        # permissive `str` field it inherits from Step so the module still
+        # imports. Validation still rejects unknown tools downstream.
+        fields: Dict[str, Any] = {"tool": (str, ...)}
+    else:
+        fields = {"tool": (Literal[tuple(spec.tools)], ...)}  # type: ignore[valid-type]
 
-class SpatialTemporalExtractionStep(Step):
-    """Step emitted by the ESM Spatial-Temporal Extraction subagent."""
-
-    tool: Literal[
-        "match_to_grid",
-        "extract_e3sm_timeseries",
-        "extract_obs_timeseries",
-        "extract_gridded_field",
-        "extract_basin_mean",
-    ]
-
-
-class DiagnosticsAndSkillMetricsStep(Step):
-    """Step emitted by the ESM Diagnostics and Skill Metrics subagent."""
-
-    tool: Literal[
-        "compute_climatology",
-        "compute_summary_stats",
-        "compute_metrics",
-        "compute_fdc_metrics",
-        "compute_spatial_bias",
-        "compute_zonal_stats",
-    ]
+    step_class = create_model(
+        spec.step_class,
+        __base__=Step,
+        __module__=__name__,
+        **fields,
+    )
+    step_class.__doc__ = f"Step emitted by the {spec.display_name} subagent."
+    return step_class
 
 
-class BasinScaleWaterCycleSynthesisStep(Step):
-    """Step emitted by the Basin-Scale Water Cycle Synthesis subagent."""
+CATEGORY_SPECS: Dict[str, CategorySpec] = category_specs()
 
-    tool: Literal[
-        "compute_basin_budget",
-        "extract_basin_mean",
-        "compute_fdc_metrics",
-        "compute_spatial_bias",
-    ]
+STEP_CLASSES: Dict[str, Type[Step]] = {
+    name: _build_step_class(spec) for name, spec in CATEGORY_SPECS.items()
+}
+
+# Bind every step class as a module-level attribute so both the five historical
+# names and any user-onboarded ones are importable from `common.workflow`.
+for _name, _spec in CATEGORY_SPECS.items():
+    globals()[_spec.step_class] = STEP_CLASSES[_name]
+
+# Explicit re-exports keep static analysers and existing imports happy.
+DataDiscoveryStep: Type[Step] = STEP_CLASSES["data_discovery"]
+SpatialTemporalExtractionStep: Type[Step] = STEP_CLASSES["extraction"]
+DiagnosticsAndSkillMetricsStep: Type[Step] = STEP_CLASSES["diagnostics"]
+BasinScaleWaterCycleSynthesisStep: Type[Step] = STEP_CLASSES["water_cycle"]
+DiagnosticVisualizationStep: Type[Step] = STEP_CLASSES["visualization"]
 
 
-class DiagnosticVisualizationStep(Step):
-    """Step emitted by the ESM Diagnostic Visualization subagent."""
+def step_class_for(category: str) -> Type[Step]:
+    """Return the Step subclass for a category name."""
 
-    tool: Literal[
-        "plot_map",
-        "plot_gridded_map",
-        "plot_timeseries",
-        "plot_scatter",
-        "plot_fdc",
-        "plot_basin_timeseries",
-        "plot_water_balance_basins",
-        "plot_basin_budget_comparison",
-        "plot_basin_radar",
-        "plot_bias_comparison",
-    ]
+    return STEP_CLASSES[category]
 
 
 class Workflow(BaseModel):

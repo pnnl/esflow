@@ -14,6 +14,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DATA_DIR = REPO_ROOT / "data" / "sample"
 REFERENCE_RESULTS_DIR = REPO_ROOT / "benchmark" / "reference_workflows" / "results"
 
+#: Files that describe the shipped system. A test that rewrites one of these has
+#: escaped its sandbox, and whatever it wrote gets committed and shipped.
+PROTECTED_REPO_FILES = (
+    REPO_ROOT / "extensions" / "registry.yaml",
+    REPO_ROOT / "tools" / "tool_catalog.yaml",
+)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "mutates_repo_state: test legitimately rewrites extensions/registry.yaml "
+        "or tools/tool_catalog.yaml and restores them itself",
+    )
+
 
 @pytest.fixture(autouse=True)
 def _reset_catalog_singletons():
@@ -21,6 +36,53 @@ def _reset_catalog_singletons():
     _catalog_singletons.clear()
     yield
     _catalog_singletons.clear()
+
+
+@pytest.fixture(autouse=True)
+def _protect_committed_repo_state(request):
+    """Fail any test that leaves the real registry or catalog modified.
+
+    This is not paranoia; it caught a real shipped defect. ``TestModel`` calls
+    *every* tool an agent exposes with dummy arguments. Because the planner
+    exposes ``delegate_to_onboarding``, which runs the onboarding agent with the
+    caller's model, a planner smoke test reached the onboarding *write* tools and
+    executed ``create_subagent(name='a')`` against the real
+    ``extensions/registry.yaml``. That junk subagent then became a live planner
+    category and a ``call_a`` tool in every session, while the suite stayed green
+    because nothing asserted on the committed file.
+
+    Writes are reverted as well as reported, so one leaky test cannot corrupt the
+    working tree or cascade into later tests.
+    """
+    if request.node.get_closest_marker("mutates_repo_state"):
+        yield
+        return
+
+    before = {
+        path: path.read_bytes() if path.is_file() else None
+        for path in PROTECTED_REPO_FILES
+    }
+
+    yield
+
+    dirtied = []
+    for path, original in before.items():
+        current = path.read_bytes() if path.is_file() else None
+        if current == original:
+            continue
+        dirtied.append(path.relative_to(REPO_ROOT).as_posix())
+        # Restore, so the working tree survives and later tests see clean state.
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
+
+    assert not dirtied, (
+        f"this test modified committed repo state: {', '.join(dirtied)} "
+        "(now restored). Point the write at tmp_path, stub the write function, or "
+        "mark the test with @pytest.mark.mutates_repo_state if the mutation is "
+        "the behaviour under test."
+    )
 
 
 @pytest.fixture

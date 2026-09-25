@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from contextvars import ContextVar
+from typing import Any
 
 from pydantic_ai.models import Model
 
@@ -16,6 +17,12 @@ class WorkflowState:
     """Shared mutable workflow state used by the planner and subagents."""
 
     workflow: Workflow
+
+    #: Scratch slot for a delegated onboarding session, so the planner can hand
+    #: turns to the onboarding agent without a separate process. Deliberately
+    #: untyped: importing ``agents.onboarding`` here would be a circular import,
+    #: and nothing in the planning path may depend on the onboarding package.
+    onboarding: Any = None
 
     def context_summary(self) -> str:
         """Summarize existing steps with output key->filename mappings."""
