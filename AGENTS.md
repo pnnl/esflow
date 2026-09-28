@@ -70,6 +70,19 @@ web app.
   (`mcp_server.py`); both use the shared validation helpers but own their
   ordering. Update both call sites if this sequence changes; extract a shared
   helper if a third entrypoint needs the same sequence.
+- **`tool_mcp/server.py` is a fourth, tool-only MCP entrypoint** with no
+  planning/execution/workflow concept at all -- one MCP tool per esmflow tool,
+  called directly. It auto-discovers every `ToolSpec` registered via
+  `@esmflow_tool` (the same `TOOL_REGISTRY` `tools/generate_catalog.py` reads)
+  and synthesizes a real, introspectable function per tool with
+  `tool_mcp/_signature.py`, so adding a tool under `tools/<category>/` needs no
+  edits in `tool_mcp/` -- unlike the separate `esflow-tool-mcp` sibling repo,
+  which hand-ports each tool and requires two edits per tool in its own
+  `server.py`. Has its own `requirements.txt`, `Dockerfile` (built from the
+  `esflow-v2/` repo root: `docker build -f tool_mcp/Dockerfile .`, since it
+  needs the sibling `tools/` directory), and standalone test suite
+  (`python -m pytest tool_mcp/tests`, not part of the root `pytest.ini`
+  testpaths).
 - Each domain module (`agents/domain/{data_discovery,extraction,diagnostics,
   water_cycle,visualization}.py`) is a thin wrapper around
   `agents/domain/_factory.py::make_domain_subagent(step_type, subagent_name,
