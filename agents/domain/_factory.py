@@ -15,13 +15,15 @@ def make_domain_subagent(
     result_label: str,
     tool_name: str,
     description: str,
+    instructions: str | None = None,
 ) -> tuple[Agent, callable]:
     """Create a category agent and its workflow-mutating tool function."""
     agent = Agent(
         model,
         output_type=list[step_type],
         instructions=load_prompt(
-            f"You are the {subagent_name} subagent. "
+            instructions
+            or f"You are the {subagent_name} subagent. "
             "Return only new steps for your category. "
             "Rely on the typed output schema to enforce allowed tool names."
         ),

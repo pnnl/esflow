@@ -26,7 +26,9 @@ SPEC = ToolSpec(
         'time series CSV. Optionally rank and filter to top N entries by a statistic. '
         'Input: time series CSV with time index and value columns (e.g., gauge_id columns). '
         'Output: CSV with columns: column_name, mean, std, min, max. '
-        'If gauge metadata is provided, river_name and area_km2 are included.'
+        'If gauge metadata is provided, river_name and area_km2 are included. '
+        "NOTE: the gauge ID column in the output is named 'column_name' (not 'gauge_id'). "
+        'When passing stats_file to plot_map, set id_column: column_name.'
     ),
     inputs={
         'timeseries_file': Param('path', required=True,
@@ -39,7 +41,9 @@ SPEC = ToolSpec(
                          description='Statistic to rank by: mean, std, min, max'),
     },
     outputs={
-        'stats_file': {'type': 'csv', 'description': 'Summary statistics CSV'},
+        'stats_file': {'type': 'csv', 'description': 'Summary statistics CSV. Gauge ID column is named '
+                                                     'column_name. When chaining to plot_map, set '
+                                                     'id_column: column_name.'},
         'n_columns': {'type': 'int', 'description': 'Number of columns analyzed'},
     },
 )

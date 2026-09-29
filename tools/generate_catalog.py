@@ -15,7 +15,7 @@ tools_dir = Path(__file__).parent
 sys.path.insert(0, str(tools_dir))
 
 # Category directories to scan
-TOOL_CATEGORIES = ['fetchers', 'loaders', 'matchers', 'extractors', 'analyzers', 'plotters']
+TOOL_CATEGORIES = ['fetchers', 'loaders', 'matchers', 'extractors', 'analyzers', 'plotters', 'validators']
 
 
 def discover_and_import():

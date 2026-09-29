@@ -75,6 +75,84 @@ def step_class_for(category: str) -> Type[Step]:
     return STEP_CLASSES[category]
 
 
+class SpatialBiasStep(Step):
+    """Step emitted by the Spatial Bias Deep-Dive subagent.
+
+    Focused on extracting gridded fields, computing bias and zonal statistics,
+    and producing map-based visualisations for model-vs-observation comparisons.
+    """
+
+    tool: Literal[
+        "extract_gridded_field",
+        "compute_spatial_bias",
+        "compute_zonal_stats",
+        "plot_gridded_map",
+        "plot_bias_comparison",
+    ]
+
+
+class ExtremesFlowStep(Step):
+    """Step emitted by the Extreme Events / Flow Statistics subagent.
+
+    Focused on extracting discharge time series, computing FDC and distributional
+    metrics, and rendering FDC and time-series plots for drought/flood analysis.
+    """
+
+    tool: Literal[
+        "extract_e3sm_timeseries",
+        "extract_obs_timeseries",
+        "match_to_grid",
+        "compute_fdc_metrics",
+        "compute_climatology",
+        "compute_summary_stats",
+        "plot_fdc",
+        "plot_timeseries",
+        "plot_basin_timeseries",
+    ]
+
+
+class ModelComparisonStep(Step):
+    """Step emitted by the Cross-Case Model Comparison subagent.
+
+    Focused on side-by-side comparison of two or more E3SM simulation cases
+    using extraction, skill metrics, bias fields, and comparison plots.
+    """
+
+    tool: Literal[
+        "extract_e3sm_timeseries",
+        "extract_gridded_field",
+        "extract_obs_timeseries",
+        "match_to_grid",
+        "compute_metrics",
+        "compute_spatial_bias",
+        "compute_summary_stats",
+        "plot_bias_comparison",
+        "plot_map",
+        "plot_timeseries",
+        "plot_scatter",
+    ]
+
+
+class ObsSurveyStep(Step):
+    """Step emitted by the Observational Data Survey subagent.
+
+    Focused on fetching remote observation datasets, loading gauge metadata,
+    computing summary statistics, and producing overview scatter/map plots.
+    """
+
+    tool: Literal[
+        "fetch_ilamb_data",
+        "load_obs_metadata",
+        "extract_obs_timeseries",
+        "compute_summary_stats",
+        "compute_climatology",
+        "plot_scatter",
+        "plot_map",
+        "plot_gridded_map",
+        "plot_timeseries",
+    ]
+
+
 class Workflow(BaseModel):
     """A complete ESMFlow workflow definition."""
 
@@ -84,9 +162,20 @@ class Workflow(BaseModel):
     steps: List[Step]
 
     def to_yaml_dict(self) -> Dict[str, Any]:
-        """Return a plain dict matching workflow YAML expectations."""
+        """Return a plain dict matching workflow YAML expectations.
 
-        return self.model_dump(exclude_none=True)
+        ``exclude_none`` is intentionally False for the ``settings`` sub-model
+        so that ``case_name: null`` is preserved in the serialised dict.  This
+        ensures ``${settings.case_name}`` can always be resolved by the workflow
+        runner — even when the user has not set ESFLOW_CASE_NAME in their .env
+        (the runner will auto-detect it from E3SM filenames in that case).
+
+        Other top-level None fields (e.g. optional step params) are still
+        excluded to keep YAML output clean.
+        """
+        d = self.model_dump(exclude_none=False)
+        d["steps"] = [step.model_dump(exclude_none=True) for step in self.steps]
+        return d
 
     def write_to_file(self, path: Union[str, Path]) -> None:
         """Write the workflow YAML dict to a file.

@@ -37,7 +37,9 @@ def test_workflow_serializes_and_writes_yaml(tmp_path):
         steps=[DataDiscoveryStep(id="metadata", tool="load_obs_metadata")],
     )
 
-    assert workflow.to_yaml_dict()["settings"] == {"data_dir": "data", "output_dir": "output"}
+    assert workflow.to_yaml_dict()["settings"] == {
+        "case_name": None, "data_dir": "data", "output_dir": "output",
+    }
 
     destination = tmp_path / "nested" / "workflow.yaml"
     workflow.write_to_file(destination)

@@ -26,14 +26,23 @@ logger = logging.getLogger(__name__)
 SPEC = ToolSpec(
     name='plot_map',
     description='Plot a validation metric on a map at gauge locations. '
-                'Shows colored markers for each gauge.',
+                'Shows colored markers for each gauge. '
+                'The metrics_file must contain a gauge ID column and the requested metric column. '
+                'The gauge ID column is auto-detected (gauge_id → column_name → first column) '
+                'or can be specified explicitly with id_column.',
     inputs={
         'metrics_file': Param('path', required=True,
-                              description='Metrics CSV with gauge_id and metric columns'),
+                              description='Metrics CSV with a gauge ID column and metric columns. '
+                                          'Accepts output from compute_metrics (gauge_id column) '
+                                          'or compute_summary_stats (column_name column).'),
         'locations_file': Param('path', required=True,
-                                description='Gauge metadata or matched CSV with gauge_id, lat, lon'),
+                                description='Gauge metadata CSV with gauge_id, lat, lon columns'),
         'metric': Param('str', required=True,
-                        description='Metric column to plot (e.g., nse, kge, pbias)'),
+                        description='Metric column to plot (e.g., nse, kge, pbias, mean)'),
+        'id_column': Param('str', required=False, default='',
+                           description='Name of the gauge ID column in metrics_file. '
+                                       'Auto-detected if blank: tries gauge_id, then column_name, '
+                                       'then the first column.'),
     },
     outputs={
         'plot_file': {'type': 'png', 'description': 'Map plot PNG'},
@@ -41,11 +50,33 @@ SPEC = ToolSpec(
 )
 
 
+def _resolve_id_column(df: pd.DataFrame, explicit: str) -> str:
+    """Return the name of the gauge-ID column in *df*.
+
+    Priority:
+    1. ``explicit`` if non-empty and present in *df*
+    2. ``gauge_id`` if present
+    3. ``column_name`` if present  (output of compute_summary_stats)
+    4. First column as last resort
+    """
+    if explicit:
+        if explicit not in df.columns:
+            raise ValueError(
+                f"ID column '{explicit}' not found. Available columns: {list(df.columns)}"
+            )
+        return explicit
+    for candidate in ('gauge_id', 'column_name'):
+        if candidate in df.columns:
+            return candidate
+    return df.columns[0]
+
+
 @esmflow_tool(SPEC)
 def run(config: dict) -> dict:
     metrics_file = config['metrics_file']
     locations_file = config['locations_file']
     metric = config['metric']
+    id_column = config.get('id_column', '') or ''
     output_dir = Path(config['output_dir'])
 
     apply_style('cream_ink')
@@ -53,6 +84,16 @@ def run(config: dict) -> dict:
 
     # Load data
     metrics = pd.read_csv(metrics_file)
+    if metric not in metrics.columns:
+        raise ValueError(
+            f"Metric '{metric}' not found in {metrics_file}. "
+            f"Available columns: {list(metrics.columns)}"
+        )
+
+    # Resolve gauge ID column and normalise to 'gauge_id' for the merge
+    id_col = _resolve_id_column(metrics, id_column)
+    print(f"  Using '{id_col}' as gauge ID column in metrics file")
+    metrics = metrics.rename(columns={id_col: 'gauge_id'})
     metrics['gauge_id'] = metrics['gauge_id'].astype(str)
 
     locs = pd.read_csv(locations_file)
@@ -66,7 +107,7 @@ def run(config: dict) -> dict:
     logger.info("Gauges with data: %s", len(merged))
 
     if len(merged) == 0:
-        raise ValueError(f"No valid data for metric '{metric}'")
+        raise ValueError(f"No valid data for metric '{metric}' after merging with locations.")
 
     # Set up colormap and normalization per metric
     if metric in ('nse', 'kge'):

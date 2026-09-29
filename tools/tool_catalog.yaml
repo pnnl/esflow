@@ -317,7 +317,9 @@ tools:
     a time series CSV. Optionally rank and filter to top N entries by a statistic.
     Input: time series CSV with time index and value columns (e.g., gauge_id columns).
     Output: CSV with columns: column_name, mean, std, min, max. If gauge metadata
-    is provided, river_name and area_km2 are included.'
+    is provided, river_name and area_km2 are included. NOTE: the gauge ID column in
+    the output is named ''column_name'' (not ''gauge_id''). When passing stats_file
+    to plot_map, set id_column: column_name.'
   inputs:
     timeseries_file:
       type: path
@@ -341,7 +343,8 @@ tools:
   outputs:
     stats_file:
       type: csv
-      description: Summary statistics CSV
+      description: 'Summary statistics CSV. Gauge ID column is named column_name.
+        When chaining to plot_map, set id_column: column_name.'
     n_columns:
       type: int
       description: Number of columns analyzed
@@ -695,20 +698,30 @@ tools:
   path: plotters/plot_timeseries.py
 - name: plot_map
   description: Plot a validation metric on a map at gauge locations. Shows colored
-    markers for each gauge.
+    markers for each gauge. The metrics_file must contain a gauge ID column and the
+    requested metric column. The gauge ID column is auto-detected (gauge_id → column_name
+    → first column) or can be specified explicitly with id_column.
   inputs:
     metrics_file:
       type: path
       required: true
-      description: Metrics CSV with gauge_id and metric columns
+      description: Metrics CSV with a gauge ID column and metric columns. Accepts
+        output from compute_metrics (gauge_id column) or compute_summary_stats (column_name
+        column).
     locations_file:
       type: path
       required: true
-      description: Gauge metadata or matched CSV with gauge_id, lat, lon
+      description: Gauge metadata CSV with gauge_id, lat, lon columns
     metric:
       type: str
       required: true
-      description: Metric column to plot (e.g., nse, kge, pbias)
+      description: Metric column to plot (e.g., nse, kge, pbias, mean)
+    id_column:
+      type: str
+      required: false
+      description: 'Name of the gauge ID column in metrics_file. Auto-detected if
+        blank: tries gauge_id, then column_name, then the first column.'
+      default: ''
   outputs:
     plot_file:
       type: png
@@ -859,3 +872,44 @@ tools:
       description: Model vs obs budget comparison figure
   category: plotters
   path: plotters/plot_basin_budget_comparison.py
+- name: validate_workflow_data
+  description: Validates user-provided data against the requirements derived from
+    the ESFlow tool catalog. Inspects gauge metadata, streamflow CSVs, basin polygons,
+    E3SM model output, and observation files. Produces a structured report of what
+    data is present, what is missing or malformed, and which tools/analyses can be
+    performed. Should be run as the first step in any workflow so the user is informed
+    of data gaps before analysis begins.
+  inputs:
+    data_dir:
+      type: path
+      required: true
+      description: Root data directory to inspect
+    catalog_file:
+      type: path
+      required: true
+      description: Path to tool_catalog.yaml — used to derive data requirements dynamically
+    case_name:
+      type: str
+      required: false
+      description: E3SM case name (e.g. sample.v3.LR.historical). If provided, model
+        output is checked.
+      default: ''
+    years:
+      type: list[int]
+      required: false
+      description: Years to check for model/obs coverage (e.g. [1985, 1986, 1987,
+        1988, 1989])
+      default: []
+  outputs:
+    report_file:
+      type: csv
+      description: Validation report CSV with columns check, status, detail, affected_tools
+    summary_file:
+      type: txt
+      description: Human-readable plain-text summary of validation results
+    feasible_tools_file:
+      type: csv
+      description: CSV listing which tools can and cannot run given the available
+        data
+  category: validators
+  path: validators/validate_workflow_data.py

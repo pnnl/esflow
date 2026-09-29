@@ -2,8 +2,21 @@ from common import _with_context
 from common.workflow import DataDiscoveryStep
 
 
+def _settings_header(workflow_state) -> str:
+    s = workflow_state.workflow.settings
+    return (
+        "Workflow settings (resolved from environment — use ${settings.<key>} in params):\n"
+        f"  data_dir:   {s.data_dir}\n"
+        f"  output_dir: {s.output_dir}\n"
+        "  case_name:  (auto-detected from E3SM filenames)\n"
+    )
+
+
 def test_workflow_state_context_summary_for_empty_workflow(workflow_state):
-    assert workflow_state.context_summary() == "No steps yet. You are creating the beginning of the workflow."
+    assert workflow_state.context_summary() == (
+        _settings_header(workflow_state)
+        + "\nNo steps yet. You are creating the beginning of the workflow."
+    )
 
 
 def test_workflow_state_context_summary_and_task_include_existing_outputs(workflow_state):
@@ -16,11 +29,13 @@ def test_workflow_state_context_summary_and_task_include_existing_outputs(workfl
     )
 
     assert workflow_state.context_summary() == (
-        "Existing steps. Use their outputs with ${step_id.outputs.key}:\n"
+        _settings_header(workflow_state)
+        + "\nExisting steps. Use their outputs with ${step_id.outputs.key}:\n"
         "- metadata (tool=load_obs_metadata) -> metadata_file: gauge_metadata.csv"
     )
     assert _with_context(workflow_state, "Summarize observations") == (
-        "Existing steps. Use their outputs with ${step_id.outputs.key}:\n"
+        _settings_header(workflow_state)
+        + "\nExisting steps. Use their outputs with ${step_id.outputs.key}:\n"
         "- metadata (tool=load_obs_metadata) -> metadata_file: gauge_metadata.csv\n\n"
         "Task:\nSummarize observations"
     )

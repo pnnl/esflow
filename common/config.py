@@ -2,6 +2,7 @@
 
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -35,16 +36,86 @@ class WebAgentMode(str, Enum):
 
 
 class RuntimeConfig(BaseSettings):
-    """Runtime configuration loaded from environment and .env file."""
+    """Runtime configuration loaded from environment and .env file.
 
+    All ESFlow path settings can be overridden via environment variables so that
+    no file paths need to be hard-coded in source.  Sensible repo-relative
+    defaults are applied when an env var is absent.
+    """
+
+    # --- Auth / gateway ---
     AI_INCUBATOR_KEY: str
     WEB_AGENT_MODE: WebAgentMode = WebAgentMode.PLANNER
+
+    # --- Data & output paths ---
+    # Root directory containing E3SM output and observation data.
+    ESFLOW_DATA_DIR: Optional[str] = None
+    # Directory where workflow outputs (plots, CSVs, etc.) are written.
+    ESFLOW_OUTPUT_DIR: Optional[str] = None
+    # Path to the tool catalog YAML.  Defaults to tools/tool_catalog.yaml inside the repo.
+    ESFLOW_CATALOG_FILE: Optional[str] = None
+    # Validation cache directory.  Defaults to <output_dir>/.validation_cache.
+    ESFLOW_VALIDATION_CACHE_DIR: Optional[str] = None
+
+    # --- E3SM simulation identifiers (optional defaults; the agent may still ask) ---
+    ESFLOW_CASE_NAME: Optional[str] = None
+    # Comma-separated list of years to validate, e.g. "1985,1986,1987"
+    ESFLOW_YEARS: Optional[str] = None
+
+    # --- Observation sub-directory layout (override if your data is not standard) ---
+    ESFLOW_OBS_SUBDIR: str = "obs"
+    ESFLOW_GAUGE_METADATA_FILENAME: str = "gauge_metadata.csv"
+    ESFLOW_STREAMFLOW_SUBDIR: str = "streamflow"
+    ESFLOW_BASIN_POLYGONS_FILENAME: str = "basin_polygons.geojson"
+    ESFLOW_ILAMB_CACHE_SUBDIR: str = "ilamb_cache"
 
     model_config = SettingsConfigDict(
         env_file=str(_REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # ------------------------------------------------------------------ helpers
+
+    def resolved_data_dir(self) -> Path:
+        """Return the data directory as an absolute Path (default: <repo>/data)."""
+        return Path(self.ESFLOW_DATA_DIR or (_REPO_ROOT / "data")).resolve()
+
+    def resolved_output_dir(self) -> Path:
+        """Return the output directory as an absolute Path (default: <repo>/output)."""
+        return Path(self.ESFLOW_OUTPUT_DIR or (_REPO_ROOT / "output")).resolve()
+
+    def resolved_catalog_file(self) -> Path:
+        """Return the tool catalog path (default: <repo>/tools/tool_catalog.yaml)."""
+        return Path(
+            self.ESFLOW_CATALOG_FILE
+            or (_REPO_ROOT / "tools" / "tool_catalog.yaml")
+        ).resolve()
+
+    def resolved_validation_cache_dir(self) -> Path:
+        """Return the validation cache dir (default: <output_dir>/.validation_cache)."""
+        if self.ESFLOW_VALIDATION_CACHE_DIR:
+            return Path(self.ESFLOW_VALIDATION_CACHE_DIR).resolve()
+        return self.resolved_output_dir() / ".validation_cache"
+
+    def resolved_years(self) -> list[int]:
+        """Parse ESFLOW_YEARS into a list of ints (empty list if not set)."""
+        if not self.ESFLOW_YEARS:
+            return []
+        return [int(y.strip()) for y in self.ESFLOW_YEARS.split(",") if y.strip()]
+
+    def obs_paths(self, data_dir: Optional[Path] = None) -> dict:
+        """Return a dict of standard observation sub-paths under *data_dir*.
+
+        Keys: gauge_metadata, streamflow_dir, basin_polygons, ilamb_cache
+        """
+        base = (data_dir or self.resolved_data_dir()) / self.ESFLOW_OBS_SUBDIR
+        return {
+            "gauge_metadata":  base / self.ESFLOW_GAUGE_METADATA_FILENAME,
+            "streamflow_dir":  base / self.ESFLOW_STREAMFLOW_SUBDIR,
+            "basin_polygons":  base / self.ESFLOW_BASIN_POLYGONS_FILENAME,
+            "ilamb_cache":     base / self.ESFLOW_ILAMB_CACHE_SUBDIR,
+        }
 
 
 runtime_config = RuntimeConfig()

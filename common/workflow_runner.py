@@ -57,6 +57,20 @@ def step_statuses_from_execution_context(
     return step_statuses
 
 
+def _default_output_dir() -> Path:
+    """Return the canonical output directory as an absolute path.
+
+    Reads ``ESFLOW_OUTPUT_DIR`` via ``RuntimeConfig`` when available, so the
+    server and the runner always agree on where outputs land.  Falls back to
+    ``<repo>/outputs`` if the config cannot be loaded.
+    """
+    try:
+        from common.config import runtime_config  # noqa: PLC0415
+        return runtime_config.resolved_output_dir()
+    except Exception:
+        return (_REPO_ROOT / "output").resolve()
+
+
 warnings.filterwarnings(
     'ignore',
     message='invalid value encountered in intersection',
@@ -216,9 +230,97 @@ def run_workflow_definition(
 
     catalog = load_raw_catalog(catalog_path)
 
-    settings = workflow.get('settings', {})
-    output_dir = Path(settings.get('output_dir', './output'))
+    settings = dict(workflow.get('settings', {}))
+
+    # Fall back to runtime_config when settings are missing or an unresolved
+    # template (e.g. the literal "${settings.output_dir}").
+    _TEMPLATE_RE = re.compile(r'^\$\{.*\}$')
+
+    def _is_template(v) -> bool:
+        return isinstance(v, str) and bool(_TEMPLATE_RE.match(v.strip()))
+
+    try:
+        from common.config import runtime_config as _rc  # noqa: PLC0415
+        default_output_dir = _rc.resolved_output_dir()
+        default_data_dir   = _rc.resolved_data_dir()
+    except Exception:
+        _rc = None
+        default_output_dir = _default_output_dir()
+        default_data_dir   = None
+
+    # Session settings are pinned by the planners, and validate_data checks the
+    # same settings.data_dir, so preflight and execution see the same roots.
+    if not settings.get('output_dir') or _is_template(settings['output_dir']):
+        settings['output_dir'] = str(default_output_dir)
+    if (not settings.get('data_dir') or _is_template(settings['data_dir'])) and default_data_dir:
+        settings['data_dir'] = str(default_data_dir)
+    canonical_data_dir = Path(settings['data_dir']).resolve() if settings.get('data_dir') else None
+
+    try:
+        canonical_obs_paths = _rc.obs_paths(canonical_data_dir)
+    except Exception:
+        canonical_obs_paths = {}
+
+    output_dir = Path(settings['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect case_name from E3SM filenames when the settings block does
+    # not supply one.  This mirrors the same logic in validate_data / preflight
+    # so the runner never fails on ${settings.case_name} references just
+    # because ESFLOW_CASE_NAME was not set in the environment.
+    if not settings.get('case_name') or _is_template(settings.get('case_name', '')):
+        data_dir_for_detect = settings.get('data_dir', '')
+        if data_dir_for_detect:
+            try:
+                from agents.data_preflight import _autodetect_e3sm_context  # noqa: PLC0415
+                detected = _autodetect_e3sm_context(data_dir_for_detect)
+                if detected['case_name']:
+                    settings['case_name'] = detected['case_name']
+                    logger.info("Auto-detected case_name: %s", detected['case_name'])
+            except Exception as _exc:
+                logger.warning("Could not auto-detect case_name: %s", _exc)
+
+    # Re-run deterministic preflight using the *actual* workflow years before
+    # execution. This is the final guard against a planner validating one time
+    # range and then emitting steps for another (for example, validating the
+    # bundled 1985--1989 streamflow records but requesting 2000--2004).
+    requested_years = settings.get('years', [])
+    if not requested_years:
+        requested_years = []
+        for step in steps:
+            step_years = step.get('params', step.get('config', {})).get('years', [])
+            if isinstance(step_years, (list, tuple)):
+                requested_years.extend(step_years)
+    try:
+        requested_years = sorted({int(year) for year in requested_years})
+    except (TypeError, ValueError):
+        requested_years = []
+
+    if canonical_data_dir:
+        try:
+            from agents.data_preflight import preflight_check  # noqa: PLC0415
+            report = preflight_check(
+                str(canonical_data_dir), str(catalog_path),
+                case_name=settings.get('case_name', ''), years=requested_years,
+            )
+            requested_tools = {step.get('tool') for step in steps}
+            blocked_requested = sorted(requested_tools & report.blocked)
+            if blocked_requested:
+                logger.error(
+                    "PREFLIGHT BLOCKED EXECUTION: the workflow requests tools whose required "
+                    "inputs are unavailable for the configured data/time range: %s",
+                    ", ".join(blocked_requested),
+                )
+                for error in report.errors:
+                    affected = error.get('affected_tools', [])
+                    if isinstance(affected, str):
+                        affected = [affected]
+                    if requested_tools.intersection(affected):
+                        logger.error("  - %s", error['detail'])
+                return None
+        except Exception as exc:
+            logger.error("Execution preflight could not run: %s", exc)
+            return None
 
     context = {
         'settings': settings,
@@ -266,13 +368,32 @@ def run_workflow_definition(
             raw_params = step.get('params', step.get('config', {}))
             params = resolve_references(raw_params, context)
 
+            # Canonicalize observation paths after reference resolution.  This
+            # prevents stale/LLM-hallucinated values like
+            # ``data/sample/basins/basins.geojson`` from bypassing the exact
+            # paths checked by preflight.
+            if 'basins_file' in params and canonical_obs_paths:
+                params['basins_file'] = str(canonical_obs_paths['basin_polygons'])
+            if 'obs_dir' in params and canonical_obs_paths:
+                params['obs_dir'] = str(canonical_obs_paths['streamflow_dir'])
+            if 'gauge_metadata' in params and canonical_obs_paths:
+                params['gauge_metadata'] = str(canonical_obs_paths['gauge_metadata'])
+            if 'data_dir' in params and canonical_data_dir:
+                params['data_dir'] = str(canonical_data_dir)
+
             step_output_dir = Path(params.get('output_dir', str(output_dir)))
 
             if 'outputs' in step:
                 for key, filename in step['outputs'].items():
                     if isinstance(filename, str):
                         filename = resolve_references(filename, context)
-                    params[f'output_{key}'] = str(step_output_dir / filename)
+                    _fn = Path(filename)
+                    out_path = _fn.resolve() if _fn.is_absolute() else (step_output_dir / _fn).resolve()
+                    try:
+                        out_path.relative_to(step_output_dir.resolve())
+                    except ValueError as e:
+                        raise ValueError(f"Refusing to write outside output_dir: {filename}") from e
+                    params[f'output_{key}'] = str(out_path)
 
             if verbose:
                 logger.info("Params: %s", params)
@@ -299,7 +420,16 @@ def run_workflow_definition(
                     if isinstance(declared_filename, str) and '${' in declared_filename:
                         declared_filename = resolve_references(declared_filename, context)
                     actual_file = Path(str(actual))
-                    declared_file = actual_file.parent / declared_filename
+                    # ``declared_filename`` should be a bare filename (e.g.
+                    # ``gauge_metadata_validated.csv``), but the LLM sometimes
+                    # emits a full relative path.  If it already contains
+                    # directory separators or is absolute, use it as-is to
+                    # avoid double-prepending the parent directory.
+                    _decl = Path(str(declared_filename))
+                    if _decl.is_absolute():
+                        declared_file = _decl
+                    else:
+                        declared_file = actual_file.parent / _decl.name
 
                     if actual_file.exists() and actual_file != declared_file:
                         declared_file.parent.mkdir(parents=True, exist_ok=True)
